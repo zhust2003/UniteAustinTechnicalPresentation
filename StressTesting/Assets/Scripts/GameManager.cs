@@ -32,7 +32,7 @@ public class GameManager : MonoBehaviour
 	private void InitializeSpells()
 	{
 		List<SpellScript> spellScripts = new List<SpellScript>();
-		var spellSystem = World.Active.GetExistingManager<SpellSystem>();
+		var spellSystem = World.DefaultGameObjectInjectionWorld.GetExistingSystemManaged<SpellSystem>();
 		/*for (int i = 0; i < 50; i++)
 		{
 			spellScripts.Add(spellSystem.CastFireball(Vector3.zero).GetComponentInChildren<SpellScript>());

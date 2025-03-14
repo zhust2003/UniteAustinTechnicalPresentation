@@ -1,6 +1,7 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using UnityEngine.Experimental.AI;
+using UnityEngine;
 
 public struct CrowdAgentNavigator : IComponentData
 {
@@ -13,11 +14,11 @@ public struct CrowdAgentNavigator : IComponentData
     public float speed;
     public float nextCornerSide;
     public float3 steeringTarget;
-    public bool1 newDestinationRequested;
-    public bool1 goToDestination;
-    public bool1 destinationInView;
-    public bool1 destinationReached;
-    public bool1 active;
+    public bool newDestinationRequested;
+    public bool goToDestination;
+    public bool destinationInView;
+    public bool destinationReached;
+    public bool active;
 
     public void MoveTo(float3 dest)
     {
@@ -34,4 +35,17 @@ public struct CrowdAgentNavigator : IComponentData
     }
 }
 
-public class CrowdAgentNavigatorComponent : ComponentDataWrapper<CrowdAgentNavigator> {}
+[AddComponentMenu("ECS/Navigation/CrowdAgentNavigator")]
+public class CrowdAgentNavigatorComponent : MonoBehaviour
+{
+    public CrowdAgentNavigator Value;
+}
+
+public class CrowdAgentNavigatorBaker : Baker<CrowdAgentNavigatorComponent>
+{
+    public override void Bake(CrowdAgentNavigatorComponent authoring)
+    {
+        var entity = GetEntity(TransformUsageFlags.Dynamic);
+        AddComponent(entity, authoring.Value);
+    }
+}

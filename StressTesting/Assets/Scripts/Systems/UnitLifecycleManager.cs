@@ -8,46 +8,16 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Burst;
 
 [UpdateAfter(typeof(SpellSystem))]
-public class UnitLifecycleManager : JobComponentSystem
+public partial class UnitLifecycleManager : SystemBase
 {
-	public struct Units
-	{
-		public ComponentDataArray<UnitTransformData> transform;
-		public ComponentDataArray<MinionTarget> targets;
-		public ComponentDataArray<RigidbodyData> rigidbodies;
-		public ComponentDataArray<TextureAnimatorData> animationData;
-		public ComponentDataArray<MinionData> data;
-		public ComponentDataArray<MinionPathData> pathsInfo;
-		public EntityArray entities;
-		public int Length;
-	}
-
-	public struct DyingUnits
-	{
-		public ComponentDataArray<DyingUnitData> dyingData;
-		public EntityArray entities;
-		public ComponentDataArray<UnitTransformData> transforms;
-		public int Length;
-	}
-
-	public struct DyingArrows
-	{
-		public ComponentDataArray<DyingUnitData> dyingData;
-		public EntityArray entities;
-		public ComponentDataArray<ArrowData> data;
-		public int Length;
-	}
-
-	[Inject]
-	private Units units;
-
-	[Inject]
-	private DyingUnits dyingUnits;
-
-	[Inject]
-	private DyingArrows dyingArrows;
+	private EntityQuery unitsQuery;
+	private EntityQuery dyingUnitsQuery;
+	private EntityQuery dyingArrowsQuery;
+	
+	private SpellSystem spellSystem;
 
 	public NativeQueue<Entity> queueForKillingEntities;
 	public NativeQueue<Entity> deathQueue;
@@ -60,125 +30,169 @@ public class UnitLifecycleManager : JobComponentSystem
 
 	private const int DeathQueueSize = 80000;
 
-	[Inject]
-	private SpellSystem spellSystem;
-
 	private Queue<Entity> entitiesThatNeedToBeKilled = new Queue<Entity>(100000);
 
-	protected override unsafe void OnDestroyManager()
+	protected override void OnCreate()
+	{
+		unitsQuery = GetEntityQuery(
+			ComponentType.ReadWrite<UnitTransformData>(),
+			ComponentType.ReadWrite<MinionTarget>(),
+			ComponentType.ReadWrite<RigidbodyData>(),
+			ComponentType.ReadWrite<TextureAnimatorData>(),
+			ComponentType.ReadWrite<MinionData>(),
+			ComponentType.ReadWrite<MinionPathData>()
+		);
+		
+		dyingUnitsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<DyingUnitData>(),
+			ComponentType.ReadWrite<UnitTransformData>()
+		);
+		
+		dyingArrowsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<DyingUnitData>(),
+			ComponentType.ReadOnly<ArrowData>()
+		);
+		
+		spellSystem = World.DefaultGameObjectInjectionWorld.GetExistingSystemManaged<SpellSystem>();
+		
+		queueForKillingEntities = new NativeQueue<Entity>(Allocator.Persistent);
+		deathQueue = new NativeQueue<Entity>(Allocator.Persistent);
+		createdArrows = new NativeQueue<ArrowData>(Allocator.Persistent);
+		entitiesForFlying = new NativeQueue<Entity>(Allocator.Persistent);
+	}
+
+	protected override void OnDestroy()
 	{
 		if (queueForKillingEntities.IsCreated) queueForKillingEntities.Dispose();
 		if (deathQueue.IsCreated) deathQueue.Dispose();
 		if (createdArrows.IsCreated) createdArrows.Dispose();
 		if (entitiesForFlying.IsCreated) entitiesForFlying.Dispose();
-
-		base.OnDestroyManager();
 	}
 
-	protected override void OnCreateManager(int capacity)
+	protected override void OnUpdate()
 	{
-		base.OnCreateManager(capacity);
-		if (!queueForKillingEntities.IsCreated) queueForKillingEntities = new NativeQueue<Entity>(Allocator.Persistent);
-		if (!entitiesForFlying.IsCreated) entitiesForFlying = new NativeQueue<Entity>(Allocator.Persistent);
-	}
-
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
-	{
-		if (units.entities.Length == 0) return inputDeps;
+		if (unitsQuery.CalculateEntityCount() == 0) return;
+		
 		Profiler.BeginSample("Explosion wait");
 		spellSystem.CombinedExplosionHandle.Complete(); // TODO try to remove this 
 		Profiler.EndSample();
-		inputDeps.Complete();
+		
+		Dependency.Complete();
+		
 		Profiler.BeginSample("Spawn ");
 
+		// 确保所有队列都已创建
 		if (!deathQueue.IsCreated) deathQueue = new NativeQueue<Entity>(Allocator.Persistent);
 		if (!createdArrows.IsCreated) createdArrows = new NativeQueue<ArrowData>(Allocator.Persistent);
+		if (!queueForKillingEntities.IsCreated) queueForKillingEntities = new NativeQueue<Entity>(Allocator.Persistent);
+		if (!entitiesForFlying.IsCreated) entitiesForFlying = new NativeQueue<Entity>(Allocator.Persistent);
 
-		while (createdArrows.Count > 0)
+		// 处理创建的箭矢
+		int arrowsProcessed = 0;
+		int maxArrowsPerFrame = 1000; // 限制每帧处理的箭矢数量
+		while (createdArrows.Count > 0 && arrowsProcessed < maxArrowsPerFrame)
 		{
 			var data = createdArrows.Dequeue();
 			Spawner.Instance.SpawnArrow(data);
+			arrowsProcessed++;
 		}
 
-		UpdateInjectedComponentGroups();
+		// 创建一个本地变量来存储deathQueue，避免在作业中捕获this
+		var localDeathQueue = deathQueue.AsParallelWriter();
+		
+		// 清理死亡单位
+		var cleanupJobHandle = Entities
+			.WithName("CleanupJob")
+			.WithAll<MinionData>()
+			.ForEach((Entity entity, in MinionData minionData) =>
+			{
+				if (minionData.Health <= 0)
+				{
+					localDeathQueue.Enqueue(entity);
+				}
+			})
+			.WithoutBurst()
+			.Schedule(Dependency);
 
-		var cleanupJob = new CleanupJob
-		{
-			deathQueue = deathQueue,
-			minionData = units.data,
-			entitites = units.entities
-		};
-
-		var moveUnitsJob = new MoveUnitsBelowGround()
-		{
-			dyingUnitData = dyingUnits.dyingData,
-			transforms = dyingUnits.transforms,
-			time = Time.time
-		};
-
-		var cleanupJobFence = cleanupJob.Schedule(units.Length, SimulationState.BigBatchSize, inputDeps);
-		var moveUnitsBelowGroundFence = moveUnitsJob.Schedule(dyingUnits.Length, SimulationState.HugeBatchSize, spellSystem.CombinedExplosionHandle);
+		// 移动死亡单位到地下
+		float currentTime = (float)SystemAPI.Time.ElapsedTime;
+		var moveUnitsJobHandle = Entities
+			.WithName("MoveUnitsBelowGround")
+			.WithAll<DyingUnitData>()
+			.ForEach((Entity entity, ref UnitTransformData transform, in DyingUnitData dyingData) =>
+			{
+				if (currentTime > dyingData.TimeAtWhichToExpire - 2f)
+				{
+					float t = (dyingData.TimeAtWhichToExpire - currentTime) / 2f;
+					transform.Position.y = math.lerp(dyingData.StartingYCoord, dyingData.StartingYCoord - 1f, 1 - t);
+				}
+			})
+			.WithoutBurst()
+			.Schedule(cleanupJobHandle);
 
 		Profiler.EndSample();
 
-		cleanupJobFence.Complete();
-		moveUnitsBelowGroundFence.Complete();
-
 		Profiler.BeginSample("LifeCycleManager - Main Thread");
 
-		float time = Time.time;
-		if (dyingUnits.Length > 0)
-		{
-			for (int i = 0; i < dyingUnits.Length; i++)
+		float time = (float)SystemAPI.Time.ElapsedTime;
+		
+		// 创建一个本地变量来存储queueForKillingEntities，避免在作业中捕获this
+		var localQueueForKillingEntities = queueForKillingEntities.AsParallelWriter();
+		
+		// 处理死亡单位
+		var dyingUnitsJobHandle = Entities
+			.WithName("ProcessDyingUnits")
+			.WithAll<DyingUnitData, UnitTransformData>()
+			.ForEach((Entity entity, in DyingUnitData dyingData) =>
 			{
-				if (time > dyingUnits.dyingData[i].TimeAtWhichToExpire)
+				if (time > dyingData.TimeAtWhichToExpire)
 				{
-					var entityToKill = dyingUnits.entities[i];
-					queueForKillingEntities.Enqueue(entityToKill);
+					localQueueForKillingEntities.Enqueue(entity);
 				}
-				//else if (time > dyingData[i].TimeAtWhichToExpire - 2f)
-				//{
-				//	float t = (dyingData[i].TimeAtWhichToExpire - time) / 2f;
-				//	var transform = transforms[i];
-				//	transform.Position.y = math.lerp(dyingData[i].StartingYCoord, dyingData[i].StartingYCoord - 1f, t);
-				//	transforms[i] = transform;
-				//}
-			}
-		}
+			})
+			.WithoutBurst()
+			.Schedule(moveUnitsJobHandle);
 
-		if (dyingArrows.Length > 0)
-		{
-			for (int i = 0; i < dyingArrows.Length; i++)
+		// 处理死亡箭矢
+		var dyingArrowsJobHandle = Entities
+			.WithName("ProcessDyingArrows")
+			.WithAll<DyingUnitData, ArrowData>()
+			.ForEach((Entity entity, in DyingUnitData dyingData) =>
 			{
-				if (time > dyingArrows.dyingData[i].TimeAtWhichToExpire)
+				if (time > dyingData.TimeAtWhichToExpire)
 				{
-					var arrowToKill = dyingArrows.entities[i];
-					queueForKillingEntities.Enqueue(arrowToKill);
+					localQueueForKillingEntities.Enqueue(entity);
 				}
-			}
-		}
+			})
+			.WithoutBurst()
+			.Schedule(dyingUnitsJobHandle);
+		
+		// 确保所有作业完成
+		dyingArrowsJobHandle.Complete();
 
 		Profiler.EndSample();
 		Profiler.BeginSample("Queue processing");
 
-		float timeForUnitExpiring = Time.time + 5f;
-		float timeForArrowExpiring = Time.time + 1f;
+		float timeForUnitExpiring = time + 5f;
+		float timeForArrowExpiring = time + 1f;
 
 		Profiler.BeginSample("Death queue");
 		int processed = 0;
-		while (deathQueue.Count > 0)
+		int maxProcessedPerFrame = 1000; // 限制每帧处理的实体数量
+		while (deathQueue.Count > 0 && processed < maxProcessedPerFrame)
 		{
 			var entityToKill = deathQueue.Dequeue();
-			if (EntityManager.HasComponent<MinionData>(entityToKill))
+			if (EntityManager.Exists(entityToKill) && EntityManager.HasComponent<MinionData>(entityToKill))
 			{
 				EntityManager.RemoveComponent<MinionData>(entityToKill);
 				entitiesThatNeedToBeKilled.Enqueue(entityToKill);
 			}
 
-			if (EntityManager.HasComponent<ArrowData>(entityToKill))
+			if (EntityManager.Exists(entityToKill) && EntityManager.HasComponent<ArrowData>(entityToKill))
 			{
 				EntityManager.AddComponentData(entityToKill, new DyingUnitData(timeForArrowExpiring, 0));
 			}
+			processed++;
 		}
 		Profiler.EndSample();
 
@@ -188,11 +202,12 @@ public class UnitLifecycleManager : JobComponentSystem
 
 		Profiler.BeginSample("Killing minionEntities");
 		// TODO try batched replacing 
+		processed = 0;
 		while (entitiesThatNeedToBeKilled.Count > 0 && processed < MaxDyingUnitsPerFrame)
 		{
 			processed++;
 			var entityToKill = entitiesThatNeedToBeKilled.Dequeue();
-			if (EntityManager.HasComponent<MinionTarget>(entityToKill))
+			if (EntityManager.Exists(entityToKill) && EntityManager.HasComponent<MinionTarget>(entityToKill))
 			{
 				EntityManager.RemoveComponent<MinionTarget>(entityToKill);
 				if (EntityManager.HasComponent<AliveMinionData>(entityToKill)) EntityManager.RemoveComponent<AliveMinionData>(entityToKill);
@@ -204,13 +219,16 @@ public class UnitLifecycleManager : JobComponentSystem
 
 				EntityManager.SetComponentData(entityToKill, textureAnimatorData);
 
-				var formations = GetComponentDataFromEntity<FormationData>();
-				var formation = formations[transform.FormationEntity];
-				formation.UnitCount--;
-				formation.Width = (int)math.ceil((math.sqrt(formation.UnitCount / 2f) * 2f));
-				if (formation.UnitCount == 0)
-					formation.FormationState = FormationData.State.AllDead;
-				formations[transform.FormationEntity] = formation;
+				var formations = GetComponentLookup<FormationData>();
+				if (formations.HasComponent(transform.FormationEntity))
+				{
+					var formation = formations[transform.FormationEntity];
+					formation.UnitCount--;
+					formation.Width = (int)math.ceil((math.sqrt(formation.UnitCount / 2f) * 2f));
+					if (formation.UnitCount == 0)
+						formation.FormationState = FormationData.State.AllDead;
+					formations[transform.FormationEntity] = formation;
+				}
 			}
 		}
 		Profiler.EndSample();
@@ -230,55 +248,18 @@ public class UnitLifecycleManager : JobComponentSystem
 		Profiler.EndSample();
 
 		Profiler.BeginSample("Destroying entities");
-		while (queueForKillingEntities.Count > 0)
+		processed = 0;
+		while (queueForKillingEntities.Count > 0 && processed < maxProcessedPerFrame)
 		{
-			EntityManager.DestroyEntity(queueForKillingEntities.Dequeue());
-		}
-		Profiler.EndSample();
-
-		Profiler.EndSample();
-		return new JobHandle();
-	}
-
-	[ComputeJobOptimization]
-	private struct CleanupJob : IJobParallelFor
-	{
-		[ReadOnly]
-		public ComponentDataArray<MinionData> minionData;
-		[ReadOnly]
-		public EntityArray entitites;
-
-		public NativeQueue<Entity>.Concurrent deathQueue;
-
-		public void Execute(int i)
-		{
-			if (minionData[i].Health <= 0)
+			var entity = queueForKillingEntities.Dequeue();
+			if (EntityManager.Exists(entity))
 			{
-				deathQueue.Enqueue(entitites[i]);
+				EntityManager.DestroyEntity(entity);
 			}
+			processed++;
 		}
-	}
+		Profiler.EndSample();
 
-	[ComputeJobOptimization]
-	private struct MoveUnitsBelowGround : IJobParallelFor
-	{
-		[ReadOnly]
-		public ComponentDataArray<DyingUnitData> dyingUnitData;
-
-		public ComponentDataArray<UnitTransformData> transforms;
-
-		public float time;
-
-		public void Execute(int i)
-		{
-			var dyingData = dyingUnitData[i];
-			var transform = transforms[i];
-
-			float t = (dyingData.TimeAtWhichToExpire - time) / 5f;
-			t = math.clamp(t, 0, 1);
-			transform.Position.y = math.lerp(dyingData.StartingYCoord - 0.8f, dyingData.StartingYCoord, t);
-
-			transforms[i] = transform;
-		}
+		Profiler.EndSample();
 	}
 }

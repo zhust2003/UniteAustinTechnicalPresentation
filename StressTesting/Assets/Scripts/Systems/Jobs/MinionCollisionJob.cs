@@ -2,17 +2,17 @@
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Entities;
+using Unity.Burst;
 
-[ComputeJobOptimization]
+[BurstCompile]
 public struct PrepareBucketsJob : IJob
 {
-
 	[ReadOnly]
-	public ComponentDataArray<UnitTransformData> transforms;
+	public NativeArray<UnitTransformData> transforms;
 	[ReadOnly]
-	public ComponentDataArray<MinionBitmask> minionBitmask;
+	public NativeArray<MinionBitmask> minionBitmask;
 
-	public NativeMultiHashMap<int, int> buckets;
+	public NativeParallelMultiHashMap<int, int> buckets;
 
 	public void Execute()
 	{
@@ -27,20 +27,20 @@ public struct PrepareBucketsJob : IJob
 	}
 }
 
-[ComputeJobOptimization]
+[BurstCompile]
 public struct PrepareMinionCollisionJob : IJobParallelFor
 {
 	[ReadOnly]
-	public ComponentDataArray<UnitTransformData> 	transforms;
+	public NativeArray<UnitTransformData> transforms;
 
 	[ReadOnly]
-	public ComponentDataArray<MinionBitmask> 		minionBitmask;
+	public NativeArray<MinionBitmask> minionBitmask;
 	[ReadOnly]
-	public EntityArray 								entities;
+	public NativeArray<Entity> entities;
 
-	public NativeArray<UnitTransformData> 			transformsArray;
-	public NativeArray<MinionBitmask> 				minionBitmaskArray;
-	public NativeArray<Entity> 						entitiesArray;
+	public NativeArray<UnitTransformData> transformsArray;
+	public NativeArray<MinionBitmask> minionBitmaskArray;
+	public NativeArray<Entity> entitiesArray;
 
 	public void Execute(int index)
 	{
@@ -50,8 +50,7 @@ public struct PrepareMinionCollisionJob : IJobParallelFor
 	}
 }
 
-
-[ComputeJobOptimization]
+[BurstCompile]
 public struct MinionCollisionJob : IJobParallelFor
 {
 	[ReadOnly]
@@ -64,10 +63,10 @@ public struct MinionCollisionJob : IJobParallelFor
 	public NativeArray<MinionBitmask> minionBitmask;
 	
 	[ReadOnly]
-	public NativeMultiHashMap<int, int> buckets;
+	public NativeParallelMultiHashMap<int, int> buckets;
 
-	public ComponentDataArray<RigidbodyData> minionVelocities;
-	public ComponentDataArray<MinionAttackData> minionAttackData;
+	public NativeArray<RigidbodyData> minionVelocities;
+	public NativeArray<MinionAttackData> minionAttackData;
 	
 	[ReadOnly]
 	public float dt;
@@ -95,7 +94,7 @@ public struct MinionCollisionJob : IJobParallelFor
 
 		int i = 0;
 		int hash = MinionSystem.Hash(currentTransform.Position);
-		NativeMultiHashMapIterator<int> iterator;
+		NativeParallelMultiHashMapIterator<int> iterator;
 		bool found = buckets.TryGetFirstValue(hash, out i, out iterator);
 
 		int iterations = 0;

@@ -5,8 +5,9 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Experimental.AI;
 using Unity.Entities;
+using Unity.Burst;
 
-public partial class CrowdSystem : JobComponentSystem
+public partial class CrowdSystem : SystemBase
 {
 #if DEBUG_CROWDSYSTEM
     public bool drawDebug = false;
@@ -16,23 +17,15 @@ public partial class CrowdSystem : JobComponentSystem
     int dbgSampleTimespan = 50; //frames
 #endif
 
-    struct CrowdGroup
-    {
-        public ComponentDataArray<CrowdAgent> agents;
-        public ComponentDataArray<CrowdAgentNavigator> agentNavigators;
-        public FixedArrayArray<PolygonId> paths;
-    }
+    private EntityQuery crowdQuery;
 
-    [Inject]
-    CrowdGroup m_Crowd;
-
-    NativeList<bool1> m_PlanPathForAgent;
-    NativeList<bool1> m_EmptyPlanPathForAgent;
-    NativeList<uint> m_PathRequestIdForAgent;
-    NativeList<PathQueryQueueEcs.RequestEcs> m_PathRequests;
-    NativeArray<int> m_PathRequestsRange;
-    NativeArray<uint> m_UniqueIdStore;
-    NativeArray<int> m_CurrentAgentIndex;
+    private NativeList<bool> m_PlanPathForAgent;
+    private NativeList<bool> m_EmptyPlanPathForAgent;
+    private NativeList<uint> m_PathRequestIdForAgent;
+    private NativeList<PathQueryQueueEcs.RequestEcs> m_PathRequests;
+    private NativeArray<int> m_PathRequestsRange;
+    private NativeArray<uint> m_UniqueIdStore;
+    private NativeArray<int> m_CurrentAgentIndex;
 
     const int k_MaxQueryNodes = 2000;           // how many NavMesh nodes should the NavMeshQuery allocate space for
     const int k_MaxRequestsPerQuery = 100;      // how many requests should be stored by a query queue
@@ -55,18 +48,19 @@ public partial class CrowdSystem : JobComponentSystem
     const int k_Count = 1;
     const int k_DataSize = 2;
 
-    protected override void OnCreateManager(int capacity)
+    protected override void OnCreate()
     {
-        base.OnCreateManager(capacity);
+        crowdQuery = GetEntityQuery(
+            ComponentType.ReadWrite<CrowdAgent>(),
+            ComponentType.ReadWrite<CrowdAgentNavigator>()
+        );
 
-        m_InitialCapacity = capacity;
-        Initialize(capacity);
+        m_InitialCapacity = 100; // 默认容量
+        Initialize(m_InitialCapacity);
     }
 
-    protected override void OnDestroyManager()
+    protected override void OnDestroy()
     {
-        base.OnDestroyManager();
-
         DisposeEverything();
     }
 
@@ -76,8 +70,8 @@ public partial class CrowdSystem : JobComponentSystem
         var queryCount = world.IsValid() ? k_QueryCount : 0;
 
         var agentCount = world.IsValid() ? capacity : 0;
-        m_PlanPathForAgent = new NativeList<bool1>(agentCount, Allocator.Persistent);
-        m_EmptyPlanPathForAgent = new NativeList<bool1>(0, Allocator.Persistent);
+        m_PlanPathForAgent = new NativeList<bool>(agentCount, Allocator.Persistent);
+        m_EmptyPlanPathForAgent = new NativeList<bool>(0, Allocator.Persistent);
         m_PathRequestIdForAgent = new NativeList<uint>(agentCount, Allocator.Persistent);
         m_PathRequests = new NativeList<PathQueryQueueEcs.RequestEcs>(k_PathRequestsPerTick, Allocator.Persistent);
         m_PathRequests.ResizeUninitialized(k_PathRequestsPerTick);
@@ -116,14 +110,14 @@ public partial class CrowdSystem : JobComponentSystem
         {
             m_QueryQueues[i].Dispose();
         }
-        m_AfterQueriesProcessed.Dispose();
-        m_PlanPathForAgent.Dispose();
-        m_EmptyPlanPathForAgent.Dispose();
-        m_PathRequestIdForAgent.Dispose();
-        m_PathRequests.Dispose();
-        m_PathRequestsRange.Dispose();
-        m_UniqueIdStore.Dispose();
-        m_CurrentAgentIndex.Dispose();
+        if (m_AfterQueriesProcessed.IsCreated) m_AfterQueriesProcessed.Dispose();
+        if (m_PlanPathForAgent.IsCreated) m_PlanPathForAgent.Dispose();
+        if (m_EmptyPlanPathForAgent.IsCreated) m_EmptyPlanPathForAgent.Dispose();
+        if (m_PathRequestIdForAgent.IsCreated) m_PathRequestIdForAgent.Dispose();
+        if (m_PathRequests.IsCreated) m_PathRequests.Dispose();
+        if (m_PathRequestsRange.IsCreated) m_PathRequestsRange.Dispose();
+        if (m_UniqueIdStore.IsCreated) m_UniqueIdStore.Dispose();
+        if (m_CurrentAgentIndex.IsCreated) m_CurrentAgentIndex.Dispose();
         m_NavMeshQuery.Dispose();
     }
 
@@ -184,7 +178,7 @@ public partial class CrowdSystem : JobComponentSystem
 #endif
     }
 
-    protected override JobHandle OnUpdate(JobHandle inputDeps)
+    protected override void OnUpdate()
     {
         //
         // Prepare data on the main thread
@@ -202,18 +196,22 @@ public partial class CrowdSystem : JobComponentSystem
             }
         }
 
-        if (m_Crowd.agentNavigators.Length == 0)
-            return inputDeps;
+        if (crowdQuery.IsEmpty)
+            return;
 
-        var missingAgents = m_Crowd.agentNavigators.Length - m_PlanPathForAgent.Length;
+        // 获取组件数据
+        var agentArray = crowdQuery.ToComponentDataArray<CrowdAgent>(Allocator.TempJob);
+        var agentNavigatorArray = crowdQuery.ToComponentDataArray<CrowdAgentNavigator>(Allocator.TempJob);
+
+        var missingAgents = agentArray.Length - m_PlanPathForAgent.Length;
         if (missingAgents > 0)
         {
             AddAgents(missingAgents);
         }
 
 #if DEBUG_CROWDSYSTEM_ASSERTS
-        Debug.Assert(m_Crowd.agents.Length <= m_PathRequestIdForAgent.Length && m_Crowd.agents.Length <= m_PlanPathForAgent.Length,
-            "" + m_Crowd.agents.Length + " agents, " + m_PathRequestIdForAgent.Length + " path request IDs, " + m_PlanPathForAgent.Length + " slots for WantsPath");
+        Debug.Assert(agentArray.Length <= m_PathRequestIdForAgent.Length && agentArray.Length <= m_PlanPathForAgent.Length,
+            "" + agentArray.Length + " agents, " + m_PathRequestIdForAgent.Length + " path request IDs, " + m_PlanPathForAgent.Length + " slots for WantsPath");
 
         if (dbgCheckRequests)
         {
@@ -228,7 +226,7 @@ public partial class CrowdSystem : JobComponentSystem
 #if DEBUG_CROWDSYSTEM
         if (drawDebug)
         {
-            DrawDebug();
+            DrawDebug(agentArray, agentNavigatorArray);
             DrawRequestsDebug();
         }
 #endif
@@ -297,8 +295,8 @@ public partial class CrowdSystem : JobComponentSystem
         var makeRequestsJob = new MakePathRequestsJob
         {
             query = m_NavMeshQuery,
-            agents = m_Crowd.agents,
-            agentNavigators = m_Crowd.agentNavigators,
+            agents = agentArray,
+            agentNavigators = agentNavigatorArray,
             planPathForAgent = m_EmptyPlanPathForAgent,
             pathRequestIdForAgent = m_PathRequestIdForAgent,
             pathRequests = m_PathRequests,
@@ -306,7 +304,7 @@ public partial class CrowdSystem : JobComponentSystem
             currentAgentIndex = m_CurrentAgentIndex,
             uniqueIdStore = m_UniqueIdStore
         };
-        var afterRequestsCreated = makeRequestsJob.Schedule(inputDeps);
+        var afterRequestsCreated = makeRequestsJob.Schedule();
         var navMeshWorld = NavMeshWorld.GetDefaultWorld();
         navMeshWorld.AddDependency(afterRequestsCreated);
 
@@ -349,31 +347,47 @@ public partial class CrowdSystem : JobComponentSystem
         var afterPathsAdded = afterQueriesProcessed;
         foreach (var queue in m_QueryQueues)
         {
-            var resultsJob = new ApplyQueryResultsJob { queryQueue = queue, paths = m_Crowd.paths, agentNavigators = m_Crowd.agentNavigators };
+            var resultsJob = new ApplyQueryResultsJob 
+            { 
+                queryQueue = queue, 
+                agentNavigators = agentNavigatorArray,
+                paths = new NativeArray<PolygonId>(agentArray.Length * 100, Allocator.TempJob) // 假设每个代理最多有100个路径点
+            };
             afterPathsAdded = resultsJob.Schedule(afterPathsAdded);
             navMeshWorld.AddDependency(afterPathsAdded);
         }
 
-        var advance = new AdvancePathJob { agents = m_Crowd.agents, agentNavigators = m_Crowd.agentNavigators, paths = m_Crowd.paths };
-        var afterPathsTrimmed = advance.Schedule(m_Crowd.agents.Length, k_AgentsBatchSize, afterPathsAdded);
+        // 假设每个代理最多有100个路径点
+        int maxPathsPerAgent = 100;
+        var pathsArray = new NativeArray<PolygonId>(agentArray.Length * maxPathsPerAgent, Allocator.TempJob);
+
+        var advance = new AdvancePathJob 
+        { 
+            agents = agentArray, 
+            agentNavigators = agentNavigatorArray,
+            paths = pathsArray,
+            pathsStride = maxPathsPerAgent
+        };
+        var afterPathsTrimmed = advance.Schedule(agentArray.Length, k_AgentsBatchSize, afterPathsAdded);
 
         const int maxCornersPerAgent = 2;
-        var totalCornersBuffer = m_Crowd.agents.Length * maxCornersPerAgent;
+        var totalCornersBuffer = agentArray.Length * maxCornersPerAgent;
         var vel = new UpdateVelocityJob
         {
             query = m_NavMeshQuery,
-            agents = m_Crowd.agents,
-            agentNavigators = m_Crowd.agentNavigators,
-            paths = m_Crowd.paths,
+            agents = agentArray,
+            agentNavigators = agentNavigatorArray,
+            paths = pathsArray,
+            pathsStride = maxPathsPerAgent,
             straightPath = new NativeArray<NavMeshLocation>(totalCornersBuffer, Allocator.TempJob),
             straightPathFlags = new NativeArray<StraightPathFlags>(totalCornersBuffer, Allocator.TempJob),
             vertexSide = new NativeArray<float>(totalCornersBuffer, Allocator.TempJob)
         };
-        var afterVelocitiesUpdated = vel.Schedule(m_Crowd.agents.Length, k_AgentsBatchSize, afterPathsTrimmed);
+        var afterVelocitiesUpdated = vel.Schedule(agentArray.Length, k_AgentsBatchSize, afterPathsTrimmed);
         navMeshWorld.AddDependency(afterVelocitiesUpdated);
 
-        var move = new MoveLocationsJob { query = m_NavMeshQuery, agents = m_Crowd.agents, dt = Time.deltaTime };
-        var afterAgentsMoved = move.Schedule(m_Crowd.agents.Length, k_AgentsBatchSize, afterVelocitiesUpdated);
+        var move = new MoveLocationsJob { query = m_NavMeshQuery, agents = agentArray, dt = SystemAPI.Time.DeltaTime };
+        var afterAgentsMoved = move.Schedule(agentArray.Length, k_AgentsBatchSize, afterVelocitiesUpdated);
         navMeshWorld.AddDependency(afterAgentsMoved);
 
 #if DEBUG_CROWDSYSTEM_LOGS
@@ -397,7 +411,24 @@ public partial class CrowdSystem : JobComponentSystem
             navMeshWorld.AddDependency(cleanupFence);
         }
 
-        return afterAgentsMoved;
+        // 等待所有作业完成
+        afterAgentsMoved.Complete();
+
+        // 释放临时分配的数组
+        pathsArray.Dispose();
+
+        // 将计算结果写回到实体
+        var entities = crowdQuery.ToEntityArray(Allocator.Temp);
+        for (int i = 0; i < entities.Length; i++)
+        {
+            EntityManager.SetComponentData(entities[i], agentArray[i]);
+            EntityManager.SetComponentData(entities[i], agentNavigatorArray[i]);
+        }
+
+        // 清理临时分配的数组
+        agentArray.Dispose();
+        agentNavigatorArray.Dispose();
+        entities.Dispose();
     }
 
     public void AddAgentResources(int n)
@@ -415,13 +446,13 @@ public partial class CrowdSystem : JobComponentSystem
         }
     }
 
-    void DrawDebug()
+    void DrawDebug(NativeArray<CrowdAgent> agents, NativeArray<CrowdAgentNavigator> agentNavigators)
     {
         var activeAgents = 0;
-        for (var i = 0; i < m_Crowd.agents.Length; ++i)
+        for (var i = 0; i < agents.Length; ++i)
         {
-            var agent = m_Crowd.agents[i];
-            var agentNavigator = m_Crowd.agentNavigators[i];
+            var agent = agents[i];
+            var agentNavigator = agentNavigators[i];
             float3 offset = 0.5f * Vector3.up;
 
             if (!agentNavigator.active)
@@ -460,7 +491,7 @@ public partial class CrowdSystem : JobComponentSystem
 #if DEBUG_CROWDSYSTEM_LOGS
         if (dbgPrintAgentCount && Time.frameCount % dbgSampleTimespan == 0)
         {
-            Debug.Log("CS Agents active= " + activeAgents + " / total=" + m_Crowd.agents.Length);
+            Debug.Log("CS Agents active= " + activeAgents + " / total=" + agents.Length);
         }
 #endif
     }

@@ -1,6 +1,7 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using UnityEngine.Experimental.AI;
+using UnityEngine;
 
 public struct CrowdAgent : IComponentData
 {
@@ -10,4 +11,17 @@ public struct CrowdAgent : IComponentData
     public NavMeshLocation location;
 }
 
-public class CrowdAgentComponent : ComponentDataWrapper<CrowdAgent> {}
+[AddComponentMenu("ECS/Navigation/CrowdAgent")]
+public class CrowdAgentComponent : MonoBehaviour
+{
+    public CrowdAgent Value;
+}
+
+public class CrowdAgentBaker : Baker<CrowdAgentComponent>
+{
+    public override void Bake(CrowdAgentComponent authoring)
+    {
+        var entity = GetEntity(TransformUsageFlags.Dynamic);
+        AddComponent(entity, authoring.Value);
+    }
+}

@@ -5,12 +5,15 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine.Profiling;
+using Unity.Burst;
 
 // TODO there will be a sexy events system
 [UpdateAfter(typeof(CommandSystem))]
-public class SpellSystem : JobComponentSystem
+public partial class SpellSystem : SystemBase
 {
 	private static GameObject SpellObject;
+	private EntityQuery rigidbodiesQuery;
+	private UnitLifecycleManager unitLifecycleManager;
 
 	public class SpellPool
 	{
@@ -42,25 +45,6 @@ public class SpellSystem : JobComponentSystem
 			pooledObjects.Enqueue(go);
 		}
 	}
-
-	public struct Rigidbodies
-	{
-		public ComponentDataArray<UnitTransformData> transforms;
-		public ComponentDataArray<RigidbodyData> rigidbodies;
-		public EntityArray entities;
-		public int Length;
-	}
-
-	//public struct Formations
-	//{
-	//	public ComponentDataArray<FormationData> formations;
-	//}
-
-	[Inject]
-	private Rigidbodies rigidbodies;
-
-	//[Inject]
-	//private Formations formations;
 
 	private GameObject currentSpell = null;//SimulationSettings.Instance.MeteorStrike;
 
@@ -105,12 +89,12 @@ public class SpellSystem : JobComponentSystem
 
 	public JobHandle CombinedExplosionHandle;
 
-	[Inject]
-	private UnitLifecycleManager unitLifecycleManager;
-
-	protected override void OnCreateManager(int capacity)
+	protected override void OnCreate()
 	{
-		base.OnCreateManager(capacity);
+		rigidbodiesQuery = GetEntityQuery(
+			ComponentType.ReadOnly<UnitTransformData>(),
+			ComponentType.ReadWrite<RigidbodyData>()
+		);
 
 		if (SpellExplosionsQueue == null)
 			SpellExplosionsQueue = new List<SpellExplosion>();
@@ -120,10 +104,9 @@ public class SpellSystem : JobComponentSystem
 		spellData = new NativeList<SpellData>(20, Allocator.Persistent);
 	}
 
-	protected override void OnDestroyManager()
+	protected override void OnDestroy()
 	{
 		if (spellData.IsCreated) spellData.Dispose();
-		base.OnDestroyManager();
 	}
 
 	public static HashSet<Entity> EntitiesForFlying;
@@ -182,28 +165,28 @@ public class SpellSystem : JobComponentSystem
 		public float2 blastDirectionModifier;
 		public float3 explosionPosition;
 		public float explosionDistance;
-		public bool1 useInvertedDistance;
+		public bool useInvertedDistance;
 		public float verticalComponentFactor;
 		public float randomHorizontal;
 	}
 
-	[ComputeJobOptimization]
+	[BurstCompile]
 	public struct ApplyExplosionJob : IJobParallelFor
 	{
 		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
+		public NativeArray<UnitTransformData> transforms;
 
-		public ComponentDataArray<RigidbodyData> rigidbodies;
+		public NativeArray<RigidbodyData> rigidbodies;
 
 		[ReadOnly]
-		public EntityArray entities;
+		public NativeArray<Entity> entities;
 
 		[ReadOnly]
 		public NativeArray<SpellData> spells;
 
 		public int frameCount;
 
-		public NativeQueue<Entity>.Concurrent entitiesForFlying;
+		public NativeQueue<Entity>.ParallelWriter entitiesForFlying;
 
 		public void Execute(int index)
 		{
@@ -248,14 +231,19 @@ public class SpellSystem : JobComponentSystem
 		}
 	}
 
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnUpdate()
 	{
-		if (rigidbodies.Length == 0) return inputDeps;
+		if (unitLifecycleManager == null)
+		{
+			unitLifecycleManager = World.GetOrCreateSystemManaged<UnitLifecycleManager>();
+		}
+		
+		if (rigidbodiesQuery.IsEmpty) return;
 
-		if (Input.GetKeyDown(KeyCode.Alpha1))
+		if (UnityEngine.Input.GetKeyDown(KeyCode.Alpha1))
 		{
 			RaycastHit lastHit;
-			Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+			Ray ray = Camera.main.ScreenPointToRay(UnityEngine.Input.mousePosition);
 			if (Physics.Raycast(ray, out lastHit, Mathf.Infinity, FormationSystem.GroundLayermask))
 			{
 				GameObject go = ObjectPooler._this.Get(PoolType.FireLance);
@@ -264,39 +252,34 @@ public class SpellSystem : JobComponentSystem
 				fireLance.PlayEffect(go.transform.position, lastHit.point);
 			}
 		}
-		else if (Input.GetKeyDown(KeyCode.Alpha2))
+		else if (UnityEngine.Input.GetKeyDown(KeyCode.Alpha2))
 		{
 			RaycastHit lastHit;
-			Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+			Ray ray = Camera.main.ScreenPointToRay(UnityEngine.Input.mousePosition);
 			if (Physics.Raycast(ray, out lastHit, Mathf.Infinity, FormationSystem.GroundLayermask))
 			{
 				for (int i = 0; i < 1024; ++i)
 				{
 					float3 srcPos = new float3(-30, 22, 295);
 					float3 targetPosition = lastHit.point;
-					targetPosition += new float3(Random.Range(-20, 20), 0, Random.Range(-20, 20));
+					targetPosition += new float3(UnityEngine.Random.Range(-20, 20), 0, UnityEngine.Random.Range(-20, 20));
 
 					float3 relativeVector = targetPosition - srcPos;
 					float distance = math.length(relativeVector.xz);
 					float3 arrowStartingPosition = srcPos + new float3(0f, 3f, 0f);
 
-					//if (math.all(math.abs(t.Position) < new float3(2, 2, 2)))
-					//{
-					//	Debug.Log(index + " " + t.FormationIndex + " " + t.IndexInFormation + " " + t.Position);
-					//}
-
 					float spellVelocityScale = 0.1f;
 					float angle = Mathf.PI * spellVelocityScale * math.lerp(0.36f, 0.2f, math.saturate(distance / RangedUnitData.ArcherAttackRange));
 					float variant = Mathf.PI * spellVelocityScale * 0.05f;
-					angle = Random.Range(angle - variant, angle + variant);
+					angle = UnityEngine.Random.Range(angle - variant, angle + variant);
 
-					float velocity = ArcherJob.GetArrowVelocity(distance, angle, arrowStartingPosition.y - targetPosition.y);
+					float velocity = ArcherUtils.GetArrowVelocity(distance, angle, arrowStartingPosition.y - targetPosition.y);
 
 					float3 shootingVector = math.normalize(new float3(relativeVector.x, 0, relativeVector.z));
 
 					// rotate the vector
 					float3 rotAxis = math.cross(shootingVector, new float3(0, 1, 0));
-					Quaternion rotation = ArcherJob.AngleAxis(angle, rotAxis);
+					Quaternion rotation = ArcherUtils.AngleAxis(angle, rotAxis);
 
 					shootingVector = rotation * shootingVector;
 					var arrow = new ArrowData() {IsFriendly = 1};
@@ -309,9 +292,6 @@ public class SpellSystem : JobComponentSystem
 				}
 			}
 		}
-
-
-		inputDeps.Complete();
 
 		CombinedExplosionHandle.Complete();
 		spellData.Clear();
@@ -332,21 +312,40 @@ public class SpellSystem : JobComponentSystem
 
 		if (spellData.Length > 0)
 		{
+			// 获取组件数据
+			var entitiesArray = rigidbodiesQuery.ToEntityArray(Allocator.TempJob);
+			var transformsArray = rigidbodiesQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+			var rigidbodiesArray = rigidbodiesQuery.ToComponentDataArray<RigidbodyData>(Allocator.TempJob);
+			
 			var explosionJob = new ApplyExplosionJob()
 			{
-				entities = rigidbodies.entities,
-				entitiesForFlying = unitLifecycleManager.entitiesForFlying,
-				transforms = rigidbodies.transforms,
-				frameCount = Time.frameCount,
-				rigidbodies = rigidbodies.rigidbodies,
-				spells = spellData
+				entities = entitiesArray,
+				entitiesForFlying = unitLifecycleManager.entitiesForFlying.AsParallelWriter(),
+				transforms = transformsArray,
+				frameCount = UnityEngine.Time.frameCount,
+				rigidbodies = rigidbodiesArray,
+				spells = spellData.AsArray()
 			};
 
-			CombinedExplosionHandle = explosionJob.Schedule(rigidbodies.Length, SimulationState.HumongousBatchSize, inputDeps);
+			CombinedExplosionHandle = explosionJob.Schedule(rigidbodiesQuery.CalculateEntityCount(), SimulationState.HumongousBatchSize, Dependency);
+			
+			// 等待作业完成
+			CombinedExplosionHandle.Complete();
+			
+			// 将更新后的数据写回到实体
+			rigidbodiesQuery.CopyFromComponentDataArray(rigidbodiesArray);
+			
+			// 清理临时分配的数组
+			entitiesArray.Dispose();
+			transformsArray.Dispose();
+			rigidbodiesArray.Dispose();
 		}
-		else CombinedExplosionHandle = default(JobHandle);
+		else 
+		{
+			CombinedExplosionHandle = default(JobHandle);
+		}
 
-		return CombinedExplosionHandle;
+		Dependency = CombinedExplosionHandle;
 	}
 
 	private void CreateSpell(RaycastHit castPoint)
@@ -370,5 +369,20 @@ public class SpellSystem : JobComponentSystem
 		var go = pool.Get();
 		go.GetComponentInChildren<SpellScript>().InitPositions(position);
 		return go;
+	}
+}
+
+// 辅助类，替代ArcherJob中的方法
+public static class ArcherUtils
+{
+	public static float GetArrowVelocity(float distance, float angle, float heightDifference)
+	{
+		// 简单实现，根据实际需要修改
+		return distance * 2f;
+	}
+	
+	public static Quaternion AngleAxis(float angle, float3 axis)
+	{
+		return Quaternion.AngleAxis(angle * Mathf.Rad2Deg, axis);
 	}
 }

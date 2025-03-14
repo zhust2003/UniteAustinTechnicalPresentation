@@ -1,0 +1,18 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+        "dotnet.backgroundAnalysis.analyzerDiagnosticsScope": "openFiles",
+        "dotnet.backgroundAnalysis.compilerDiagnosticsScope": "openFiles",
+        "dotnet.completion.showCompletionItemsFromUnimportedNamespaces": false,
+        "csharp.maxProjectFileCountForDiagnosticAnalysis": 50,
+        "dotnet.preferCSharpExtension": true,
+        "files.exclude": {
+            "Temp": true,
+            "Library": true,
+        }
+	}
+}

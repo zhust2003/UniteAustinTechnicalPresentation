@@ -3,23 +3,24 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using Unity.Entities;
+using Unity.Burst;
 
-[ComputeJobOptimization]
+[BurstCompile]
 public struct ArcherJob : IJobParallelFor
 {
-	public NativeQueue<ArrowData>.Concurrent createdArrowsQueue;
+	public NativeQueue<ArrowData>.ParallelWriter createdArrowsQueue;
 
-	public ComponentDataArray<MinionData> archers;
-
-	[ReadOnly]
-	public ComponentDataArray<UnitTransformData> transforms;
+	public NativeArray<MinionData> archers;
 
 	[ReadOnly]
-	public ComponentDataFromEntity<FormationData> formations;
+	public NativeArray<UnitTransformData> transforms;
+
 	[ReadOnly]
-	public ComponentDataFromEntity<FormationClosestData> closestFormationsFromEntity;
+	public ComponentLookup<FormationData> formations;
 	[ReadOnly]
-	public ComponentDataArray<MinionBitmask> minionConstData;
+	public ComponentLookup<FormationClosestData> closestFormationsFromEntity;
+	[ReadOnly]
+	public NativeArray<MinionBitmask> minionConstData;
 
 	[ReadOnly]
 	public int randomizer;
@@ -38,7 +39,7 @@ public struct ArcherJob : IJobParallelFor
 
 		// check if closest formation exists
 		var closestFormationEntity = closestFormationsFromEntity[t.FormationEntity].closestFormation;
-		if (closestFormationEntity == new Entity())
+		if (closestFormationEntity == Entity.Null)
 			return;
 
 		// Check the distance

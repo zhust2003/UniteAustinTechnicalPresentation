@@ -3,19 +3,12 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using Unity.Entities;
+using Unity.Burst;
+using Unity.Collections.LowLevel.Unsafe;
 
 [UpdateAfter(typeof(ArrowSystem))]
-public class ArrowRenderSystem : JobComponentSystem
+public partial class ArrowRenderSystem : SystemBase
 {
-	public struct Arrows
-	{
-		public ComponentDataArray<ArrowData> data;
-		public int Length;
-	}
-
-	[Inject]
-	private Arrows arrows;
-
 	private Material arrowMaterial;
 	private Mesh arrowMesh;
 
@@ -24,18 +17,22 @@ public class ArrowRenderSystem : JobComponentSystem
 
 	private const int ArrowCapacity = 50000;
 
-	[NativeFixedLength(5)]
 	private NativeArray<uint> indirectArgs;
-	[NativeFixedLength(ArrowCapacity)]
 	private NativeArray<Matrix4x4> transformationMatrices;
 
+	private EntityQuery arrowQuery;
 	private JobHandle previousFrameHandle;
 	public int prevLength = 0;
 
-	protected override void OnDestroyManager()
+	protected override void OnCreate()
 	{
-		base.OnDestroyManager();
+		arrowQuery = GetEntityQuery(ComponentType.ReadOnly<ArrowData>());
+		indirectArgs = new NativeArray<uint>(5, Allocator.Persistent);
+		transformationMatrices = new NativeArray<Matrix4x4>(ArrowCapacity, Allocator.Persistent);
+	}
 
+	protected override void OnDestroy()
+	{
 		if (argsBuffer != null) argsBuffer.Dispose();
 		if (objectToWorldBuffer != null) objectToWorldBuffer.Dispose();
 
@@ -44,14 +41,10 @@ public class ArrowRenderSystem : JobComponentSystem
 		if (indirectArgs.IsCreated) indirectArgs.Dispose();
 	}
 
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnUpdate()
 	{
 		if (SimulationSettings.Instance.DisableRendering)
-			return inputDeps;
-
-		// Allocate the native array
-		if (!indirectArgs.IsCreated) indirectArgs = new NativeArray<uint>(5, Allocator.Persistent);
-		if (!transformationMatrices.IsCreated) transformationMatrices = new NativeArray<Matrix4x4>(ArrowCapacity, Allocator.Persistent);
+			return;
 
 		if ((arrowMaterial == null || arrowMesh == null) && Application.isPlaying)
 		{
@@ -64,13 +57,12 @@ public class ArrowRenderSystem : JobComponentSystem
 				arrowMesh = arrowObject.GetComponent<MeshFilter>().sharedMesh;
 				arrowMaterial = new Material(arrowObject.GetComponent<Renderer>().sharedMaterial);
 
-				
 				arrowMaterial.SetFloat("textureCoord", 1);
 			}
 			else Debug.LogError("Arrow object not found");
 		}
 
-		if (arrowMaterial == null || arrowMesh == null) return inputDeps;
+		if (arrowMaterial == null || arrowMesh == null) return;
 
 		arrowMaterial.SetBuffer("objectToWorldBuffer", objectToWorldBuffer);
 
@@ -84,44 +76,40 @@ public class ArrowRenderSystem : JobComponentSystem
 
 		Graphics.DrawMeshInstancedIndirect(arrowMesh, 0, arrowMaterial, new Bounds(Vector3.zero, 10000000 * Vector3.one), argsBuffer);
 
-		prevLength = arrows.Length;
-		var calculateMatricesJob = new CalculateArrowTransformationMatrix
-		{
-			arrows = arrows.data,
-			transformationMatrices = transformationMatrices,
-		};
+		int arrowCount = arrowQuery.CalculateEntityCount();
+		prevLength = arrowCount;
 
-		var calculateMatricesFence = calculateMatricesJob.Schedule(arrows.Length, SimulationState.SmallBatchSize, inputDeps);
+		// 创建本地变量以避免捕获this
+		var localTransformationMatrices = transformationMatrices;
+		int localArrowCapacity = ArrowCapacity;
 
-		previousFrameHandle = calculateMatricesFence;
-		return calculateMatricesFence;
-	}
+		// 确保NativeArray在作业中是有效的
+		if (!localTransformationMatrices.IsCreated || arrowCount <= 0)
+			return;
 
-	[ComputeJobOptimization]
-	private struct CalculateArrowTransformationMatrix : IJobParallelFor
-	{
-		[ReadOnly]
-		public ComponentDataArray<ArrowData> arrows;
-		[NativeFixedLength(ArrowCapacity)]
-		public NativeArray<Matrix4x4> transformationMatrices;
+		var calculateMatricesJobHandle = Entities
+			.WithName("CalculateArrowTransformationMatrix")
+			.WithBurst()
+			.ForEach((int entityInQueryIndex, in ArrowData arrow) =>
+			{
+				if (entityInQueryIndex >= localArrowCapacity) return;
 
-		public void Execute(int index)
-		{
-			var arrow = arrows[index];
+				float3 f = math.normalize(arrow.velocity);
+				float3 r = math.cross(f, new float3(0, 1, 0));
+				float3 u = math.cross(f, r);
+				float3 p = arrow.position;
 
-			float3 f = math.normalize(arrow.velocity);
-			float3 r = math.cross(f, new float3(0, 1, 0));
-			float3 u = math.cross(f, r);
-			float3 p = arrow.position;
+				var transform = new Matrix4x4(
+					new Vector4(r.x, r.y, r.z, 0),
+					new Vector4(u.x, u.y, u.z, 0),
+					new Vector4(f.x, f.y, f.z, 0),
+					new Vector4(p.x, p.y, p.z, 1f));
 
-			// Just add some scale to the projectiles, later remove this
+				localTransformationMatrices[entityInQueryIndex] = transform;
+			})
+			.ScheduleParallel(Dependency);
 
-			var transform = new Matrix4x4(	new Vector4(r.x, r.y, r.z, 0),
-											new Vector4(u.x, u.y, u.z, 0),
-											new Vector4(f.x, f.y, f.z, 0),
-											new Vector4(p.x, p.y, p.z, 1f));
-
-			transformationMatrices[index] = transform;
-		}
+		previousFrameHandle = calculateMatricesJobHandle;
+		Dependency = calculateMatricesJobHandle;
 	}
 }

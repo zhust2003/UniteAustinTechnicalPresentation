@@ -1,6 +1,7 @@
 ﻿using System.Runtime.InteropServices;
 using Unity.Mathematics;
 using Unity.Entities;
+using UnityEngine;
 
 [System.Serializable]
 public struct FormationData : IComponentData
@@ -158,7 +159,7 @@ public struct FormationIntegrityData : IComponentData
 }
 
 // TODO remove this workaround, you should be able to add to formationEntity ComponentType.FixedArray(typeof(Entity))
-public struct EntityRef
+public struct EntityRef : IBufferElementData
 {
 	public Entity entity;
 
@@ -168,6 +169,17 @@ public struct EntityRef
 	}
 }
 
-public class FormationComponent : ComponentDataWrapper<FormationData>
+[AddComponentMenu("ECS/Components/Formation")]
+public class FormationComponent : MonoBehaviour
 {
+	public FormationData Value;
+}
+
+public class FormationBaker : Baker<FormationComponent>
+{
+	public override void Bake(FormationComponent authoring)
+	{
+		var entity = GetEntity(TransformUsageFlags.Dynamic);
+		AddComponent(entity, authoring.Value);
+	}
 }

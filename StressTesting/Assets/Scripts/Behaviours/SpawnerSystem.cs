@@ -7,7 +7,7 @@ using Unity.Entities;
 using Unity.Jobs;
 
 [UpdateAfter(typeof(UnitLifecycleManager))]
-public class SpawnerSystem : JobComponentSystem
+public partial class SpawnerSystem : SystemBase
 {
 	public List<List<float3>> newHighLevelRoutes = new List<List<float3>>();
 
@@ -17,7 +17,6 @@ public class SpawnerSystem : JobComponentSystem
 
 	public FormationWaypoint[] formationWaypoints;
 
-	[Inject]
 	private TextureAnimatorSystem textureAnimatorSystem;
 
 	public int totalRequested = 0;
@@ -30,7 +29,6 @@ public class SpawnerSystem : JobComponentSystem
 			spawnerObject = GameObject.FindObjectOfType<Spawner>();
 		}
 
-		const float minX = -271;
 		const float maxX = 210;
 		const float z = 200;
 		// Get high level paths
@@ -103,61 +101,63 @@ public class SpawnerSystem : JobComponentSystem
 		}
 	}
 
+	protected override void OnCreate()
+	{
+		textureAnimatorSystem = World.GetOrCreateSystemManaged<TextureAnimatorSystem>();
+	}
 
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnUpdate()
 	{
 		if (!initialized)
 		{
 			Initialize();
 		}
 
-		// Schedule instantiation
 		if (Input.GetKeyDown(KeyCode.S))
 		{
 			SpawnAdditionalUnits();
 		}
 
 		if (!SimulationSettings.Instance.EnableSpawners)
-			return inputDeps;
+			return;
 
 		if (SpawnPoints.Length == 0)
-			return inputDeps;
+			return;
 
-		inputDeps.Complete();
-		// Enable spawn point to spawn units in time slots
+		var entityManager = EntityManager;
+		float deltaTime = UnityEngine.Time.deltaTime;
+		
 		for (int i = 0; i < SpawnPoints.Length; i++)
 		{
 			SpawnPointComponent point = SpawnPoints[i];
 
 			float spawnTime = SimulationSettings.Instance.SpawnTimesPerUnit[(int)point.Type];
 
-			// spawn point is ready to spawn units
 			if (point.ElapsedTime >= spawnTime)
 			{
-				point.ElapsedTimeSinceLastBatch = point.ElapsedTimeSinceLastBatch + Time.deltaTime;
+				point.ElapsedTimeSinceLastBatch = point.ElapsedTimeSinceLastBatch + deltaTime;
 
-				// Ready to spawn. Create new formation data
 				if (point.NumberOfSpawnedUnits == 0)
 				{
-					if (textureAnimatorSystem.initialized && textureAnimatorSystem.perUnitTypeDataHolder[point.Type].Count
+					if (textureAnimatorSystem != null && ((dynamic)textureAnimatorSystem).initialized && ((dynamic)textureAnimatorSystem).perUnitTypeDataHolder[point.Type].Count
 						+ SimulationSettings.Instance.UnitsPerFormation >= 34000)
 					{
 						continue;
 					}
-					if (textureAnimatorSystem.initialized) textureAnimatorSystem.perUnitTypeDataHolder[point.Type].Count = textureAnimatorSystem.perUnitTypeDataHolder[point.Type].Count
+					if (textureAnimatorSystem != null && ((dynamic)textureAnimatorSystem).initialized) ((dynamic)textureAnimatorSystem).perUnitTypeDataHolder[point.Type].Count = ((dynamic)textureAnimatorSystem).perUnitTypeDataHolder[point.Type].Count
 																															+ SimulationSettings.Instance.UnitsPerFormation;
 
 					var entity = Spawn(point);
 
-					var forData = EntityManager.GetComponentData<FormationData>(entity);
+					var forData = entityManager.GetComponentData<FormationData>(entity);
 					forData.FormationState = FormationData.State.Spawning;
 					point.NumberOfSpawnedUnits = point.NumberOfSpawnedUnits + SimulationSettings.countPerSpawner;
 					forData.SpawnedCount = forData.SpawnedCount + SimulationSettings.countPerSpawner;
 
-					EntityManager.SetComponentData(entity, forData);
+					entityManager.SetComponentData(entity, forData);
 					point.formationEntity = entity;
 
-					var path = EntityManager.GetComponentData<FormationHighLevelPath>(entity);
+					var path = entityManager.GetComponentData<FormationHighLevelPath>(entity);
 					int pathIndex = point.minPathIndex + (point.SpawnedFormationCount % (point.maxPathIndex + 1 - point.minPathIndex));
 
 					List<float3> pathList = newHighLevelRoutes[pathIndex];
@@ -167,13 +167,13 @@ public class SpawnerSystem : JobComponentSystem
 					path.target2 = point.IsFriendly ? pathList[1] : pathList[2];
 					path.ultimateDestination = point.IsFriendly ? pathList[0] : pathList[3];
 
-					EntityManager.SetComponentData(entity, path);
+					entityManager.SetComponentData(entity, path);
 
 					point.SpawnedFormationCount++;
 				}
 				else
 				{
-					var formationsFromEntity = GetComponentDataFromEntity<FormationData>();
+					var formationsFromEntity = SystemAPI.GetComponentLookup<FormationData>();
 					var formation = formationsFromEntity[point.formationEntity];
 					if (point.ElapsedTimeSinceLastBatch >= SimulationSettings.Instance.TimeToSpawnBatch)
 					{
@@ -192,11 +192,10 @@ public class SpawnerSystem : JobComponentSystem
 			}
 			else
 			{
-				point.ElapsedTime = point.ElapsedTime + Time.deltaTime;
+				point.ElapsedTime = point.ElapsedTime + deltaTime;
 			}
 			SpawnPoints[i] = point;
 		}
-		return new JobHandle();
 	}
 
 	public void Initialize()

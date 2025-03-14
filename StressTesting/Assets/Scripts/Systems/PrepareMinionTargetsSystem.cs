@@ -2,69 +2,112 @@
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Entities;
+using Unity.Burst;
 
 [UpdateAfter(typeof(FormationMaintenanceSystem))]
-public class PrepareMinionTargetsSystem : JobComponentSystem
+public partial class PrepareMinionTargetsSystem : SystemBase
 {
-    public struct Minions
+    private EntityQuery minionQuery;
+    private EntityQuery formationQuery;
+    private ComponentLookup<FormationData> formationDataFromEntity;
+
+    protected override void OnCreate()
     {
-        public ComponentDataArray<UnitTransformData> transforms;
-        public ComponentDataArray<MinionTarget> targets;
-        public ComponentDataArray<MinionData> data;
-        public ComponentDataArray<MinionBitmask> bitmask;
-        public ComponentDataArray<IndexInFormationData> indicesInFormation;
-        public ComponentDataArray<MinionPathData> pathInfos;
-        public int Length;
+        minionQuery = GetEntityQuery(
+            ComponentType.ReadWrite<UnitTransformData>(),
+            ComponentType.ReadWrite<MinionTarget>(),
+            ComponentType.ReadOnly<MinionData>(),
+            ComponentType.ReadWrite<MinionBitmask>(),
+            ComponentType.ReadOnly<IndexInFormationData>(),
+            ComponentType.ReadWrite<MinionPathData>()
+        );
+
+        // 创建专门用于FormationData的查询
+        formationQuery = GetEntityQuery(ComponentType.ReadOnly<FormationData>());
+        
+        formationDataFromEntity = GetComponentLookup<FormationData>(true);
     }
 
-    [Inject]
-    private Minions minions;
-
-    [Inject]
-    private ComponentDataFromEntity<FormationData> formationDataFromEntity;
-
-    protected override JobHandle OnUpdate(JobHandle inputDeps)
+    protected override void OnUpdate()
     {
-        if (minions.Length == 0) return inputDeps;
+        if (minionQuery.IsEmpty)
+            return;
 
+        // 更新ComponentLookup
+        formationDataFromEntity.Update(this);
+        
+        // 获取FormationData的依赖
+        var formationDependency = formationQuery.GetDependency();
+        
+        // 获取组件数据
+        var transforms = minionQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+        var targets = minionQuery.ToComponentDataArray<MinionTarget>(Allocator.TempJob);
+        var data = minionQuery.ToComponentDataArray<MinionData>(Allocator.TempJob);
+        var bitmask = minionQuery.ToComponentDataArray<MinionBitmask>(Allocator.TempJob);
+        var indicesInFormation = minionQuery.ToComponentDataArray<IndexInFormationData>(Allocator.TempJob);
+        var pathInfos = minionQuery.ToComponentDataArray<MinionPathData>(Allocator.TempJob);
+
+        // 创建并调度作业
         var prepareTargetsJob = new PrepareMinonTargets
         {
             formations = formationDataFromEntity,
-            transforms = minions.transforms,
-            minionTargets = minions.targets,
-            minionData = minions.data,
-            minionBitmask = minions.bitmask,
+            transforms = transforms,
+            minionTargets = targets,
+            minionData = data,
+            minionBitmask = bitmask,
             baseMinionSpeed = SimulationSettings.Instance.MinionSpeed,
-            pathInfos = minions.pathInfos,
-            IndicesInFormation = minions.indicesInFormation
+            pathInfos = pathInfos,
+            IndicesInFormation = indicesInFormation
         };
 
-        var PrepareTargetsFence = prepareTargetsJob.Schedule(minions.Length, SimulationState.BigBatchSize,
-                                                             inputDeps);
-
-        return PrepareTargetsFence;
+        // 合并依赖
+        Dependency = JobHandle.CombineDependencies(Dependency, formationDependency);
+        
+        var jobHandle = prepareTargetsJob.Schedule(transforms.Length, SimulationState.BigBatchSize, Dependency);
+        
+        // 更新FormationData的依赖
+        formationQuery.AddDependency(jobHandle);
+        
+        // 等待作业完成
+        jobHandle.Complete();
+        
+        // 将更新后的数据写回到实体
+        minionQuery.CopyFromComponentDataArray(targets);
+        minionQuery.CopyFromComponentDataArray(bitmask);
+        minionQuery.CopyFromComponentDataArray(pathInfos);
+        
+        // 释放临时分配的数组
+        transforms.Dispose();
+        targets.Dispose();
+        data.Dispose();
+        bitmask.Dispose();
+        indicesInFormation.Dispose();
+        pathInfos.Dispose();
+        
+        // 更新依赖
+        Dependency = jobHandle;
     }
 
-    [ComputeJobOptimization]
+    [BurstCompile]
     private struct PrepareMinonTargets : IJobParallelFor
     {
         [ReadOnly]
-        public ComponentDataFromEntity<FormationData> formations;
+        public ComponentLookup<FormationData> formations;
 
         [ReadOnly]
-        public ComponentDataArray<UnitTransformData> transforms;
+        public NativeArray<UnitTransformData> transforms;
 
         [ReadOnly]
-        public ComponentDataArray<MinionData> minionData;
+        public NativeArray<MinionData> minionData;
 
-        public ComponentDataArray<MinionBitmask> minionBitmask;
+        public NativeArray<MinionBitmask> minionBitmask;
 
-        public ComponentDataArray<MinionTarget> minionTargets;
+        public NativeArray<MinionTarget> minionTargets;
         
-        public ComponentDataArray<MinionPathData> pathInfos;
+        public NativeArray<MinionPathData> pathInfos;
 
         [ReadOnly]
-        public ComponentDataArray<IndexInFormationData> IndicesInFormation;
+        public NativeArray<IndexInFormationData> IndicesInFormation;
 
         [ReadOnly]
         public float baseMinionSpeed;

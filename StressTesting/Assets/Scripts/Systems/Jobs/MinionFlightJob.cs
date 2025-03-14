@@ -2,13 +2,15 @@
 using Unity.Jobs;
 using UnityEngine;
 using Unity.Entities;
+using Unity.Burst;
 
+[BurstCompile]
 public struct MinionFlightJob : IJobParallelFor
 {
-	public ComponentDataArray<UnitTransformData> flyingUnits;
-	public ComponentDataArray<TextureAnimatorData> textureAnimators;
-	public ComponentDataArray<RigidbodyData> rigidbodies;
-	public ComponentDataArray<MinionData> minionData;
+	public NativeArray<UnitTransformData> flyingUnits;
+	public NativeArray<TextureAnimatorData> textureAnimators;
+	public NativeArray<RigidbodyData> rigidbodies;
+	public NativeArray<MinionData> minionData;
 
 	[ReadOnly]
 	public NativeArray<RaycastHit> raycastHits;

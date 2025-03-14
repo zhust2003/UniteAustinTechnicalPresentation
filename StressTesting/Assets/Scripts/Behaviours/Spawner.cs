@@ -5,6 +5,29 @@ using Unity.Mathematics;
 using UnityEngine;
 using Unity.Entities;
 using UnityEngine.Experimental.AI;
+using Unity.Entities.Conversion;
+
+// 添加PolygonIdElement结构体
+public struct PolygonIdElement : IBufferElementData
+{
+	public PolygonId Value;
+	
+	public PolygonIdElement(PolygonId value)
+	{
+		Value = value;
+	}
+}
+
+// 添加Float3BufferElement结构体
+public struct Float3BufferElement : IBufferElementData
+{
+	public float3 Value;
+	
+	public Float3BufferElement(float3 value)
+	{
+		Value = value;
+	}
+}
 
 public class Spawner : MonoBehaviour
 {
@@ -16,13 +39,14 @@ public class Spawner : MonoBehaviour
 	public bool SpawningFinished = false;
 
 	EntityManager entityManager;
-
+	World defaultWorld;
 	NavMeshQuery mapLocationQuery;
 
 	public void Awake()
 	{
 		Instance = this; // worst singleton ever but it works
-		entityManager = World.Active.GetExistingManager<EntityManager>();
+		defaultWorld = World.DefaultGameObjectInjectionWorld;
+		entityManager = defaultWorld.EntityManager;
 		var navMeshWorld = NavMeshWorld.GetDefaultWorld();
 		mapLocationQuery = new NavMeshQuery(navMeshWorld, Allocator.Persistent);
 	}
@@ -74,8 +98,14 @@ public class Spawner : MonoBehaviour
 
 		entityManager.AddComponentData(formationEntity, new CrowdAgent { worldPosition = formationData.Position, type = 0, location = location});
 		entityManager.AddComponentData(formationEntity, highLevelPath);
-		entityManager.AddComponent(formationEntity, ComponentType.FixedArray(typeof(EntityRef), formationData.UnitCount));
-		entityManager.AddComponent(formationEntity, ComponentType.FixedArray(typeof(PolygonId), 128));
+		
+		// 使用DynamicBuffer替代FixedArray
+		var entityRefBuffer = entityManager.AddBuffer<EntityRef>(formationEntity);
+		entityRefBuffer.ResizeUninitialized(formationData.UnitCount);
+		
+		var polygonIdBuffer = entityManager.AddBuffer<PolygonIdElement>(formationEntity);
+		polygonIdBuffer.ResizeUninitialized(128);
+		
 		entityManager.AddComponentData(formationEntity, new FormationIntegrityData() { });
 
 		var crowd = new CrowdAgentNavigator()
@@ -90,19 +120,21 @@ public class Spawner : MonoBehaviour
 
 		var unitType = (UnitType)formationData.UnitType;
 
-		GameObject minionPrefab;
-		minionPrefab = GetMinionPrefab(unitType);
 
-		var prototypeMinion = entityManager.Instantiate(minionPrefab);
+		// 在ECS 1.0中，我们需要使用EntityManager.CreateEntity并手动添加组件
+		var prototypeMinion = entityManager.Instantiate(GetMinionEntityPrefab(unitType));
 
 		entityManager.AddComponentData(prototypeMinion, new MinionBitmask(formationData.IsFriendly, spawnedFromPortals));
 		entityManager.AddComponentData(prototypeMinion, new MinionAttackData(new Entity()));
 		entityManager.AddComponentData(prototypeMinion, new MinionPathData());
-		entityManager.AddComponent(prototypeMinion, ComponentType.FixedArray(typeof(float3), SimulationState.MaxPathSize));
+		
+		// 使用DynamicBuffer替代FixedArray
+		var pathBuffer = entityManager.AddBuffer<Float3BufferElement>(prototypeMinion);
+		pathBuffer.ResizeUninitialized(SimulationState.MaxPathSize);
+		
 		entityManager.AddComponentData(prototypeMinion, new IndexInFormationData(-1));
 		entityManager.AddComponentData(prototypeMinion, new NavMeshLocationComponent());
 		
-
 		var minions = new NativeArray<Entity>(formationData.UnitCount, Allocator.Temp);
 		entityManager.Instantiate(prototypeMinion, minions);
 
@@ -119,7 +151,9 @@ public class Spawner : MonoBehaviour
 			transform.UnitType = (int)unitType;
 			transform.Forward = formationData.Forward;
 
-			float scale = entityManager.GetSharedComponentData<RenderingData>(entity).LodData.Scale;
+			// 访问RenderingData中的字段
+			var renderingData = entityManager.GetSharedComponentManaged<RenderingData>(entity);
+			float scale = renderingData.Scale;
 			transform.Scale = UnityEngine.Random.Range(SimulationSettings.Instance.MinionScaleMin, SimulationSettings.Instance.MinionScaleMax) * scale;
 			if (unitType != UnitType.Skeleton)
 			{
@@ -203,6 +237,35 @@ public class Spawner : MonoBehaviour
 			}
 		}
 
+		return result;
+	}
+
+	private Entity GetMinionEntityPrefab(UnitType unitType)
+	{
+		// 获取 GameObject Prefab
+		GameObject prefab = GetMinionPrefab(unitType);
+		
+		// 查找对应的 Entity
+		var world = World.DefaultGameObjectInjectionWorld;
+		var entityManager = world.EntityManager;
+		
+		// 使用 RenderingData 查询
+		var query = entityManager.CreateEntityQuery(ComponentType.ReadOnly<RenderingData>());
+		var entities = query.ToEntityArray(Allocator.Temp);
+		
+		Entity result = Entity.Null;
+		
+		foreach (var entity in entities)
+		{
+			var renderingData = entityManager.GetSharedComponentManaged<RenderingData>(entity);
+			if (renderingData.UnitTypeValue == (int)unitType)
+			{
+				result = entity;
+				break;
+			}
+		}
+		
+		entities.Dispose();
 		return result;
 	}
 }

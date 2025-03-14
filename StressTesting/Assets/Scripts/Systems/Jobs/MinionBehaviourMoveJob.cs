@@ -4,7 +4,6 @@ using UnityEngine;
 using Unity.Entities;
 using UnityEngine.Experimental.AI;
 
- [ComputeJobOptimization]
 public struct MinionBehaviourMoveJob : IJobParallelForBatch
 {
 	public NativeArray<Vector3> positionsBuffer;

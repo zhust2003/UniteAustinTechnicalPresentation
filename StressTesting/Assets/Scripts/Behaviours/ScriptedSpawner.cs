@@ -27,7 +27,7 @@ public class ScriptedSpawner : MonoBehaviour
 	{
 		spawner = FindObjectOfType<Spawner>();
 		formationWaypoints = FindObjectsOfType<FormationWaypoint>();
-		textureAnimatorSystem = World.Active.GetExistingManager<TextureAnimatorSystem>();
+		textureAnimatorSystem = World.DefaultGameObjectInjectionWorld.GetExistingSystemManaged<TextureAnimatorSystem>();
 	}
 
 	public int Spawn(int index)

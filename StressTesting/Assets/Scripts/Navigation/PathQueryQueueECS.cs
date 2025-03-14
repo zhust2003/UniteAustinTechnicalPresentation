@@ -128,7 +128,7 @@ public struct PathQueryQueueEcs
         return m_State[0].resultPathsCount;
     }
 
-    public void CopyResultsTo(ref FixedArrayArray<PolygonId> agentPaths, ref ComponentDataArray<CrowdAgentNavigator> agentNavigators)
+    public void CopyResultsTo(ref NativeArray<PolygonId> agentPaths, ref NativeArray<CrowdAgentNavigator> agentNavigators)
     {
         var state = m_State[0];
         for (var i = 0; i < state.resultPathsCount; i++)
@@ -136,12 +136,11 @@ public struct PathQueryQueueEcs
             var index = m_AgentIndices[i];
             var resultPathInfo = m_ResultRanges[i];
             var resultNodes = new NativeSlice<PolygonId>(m_ResultNodes, resultPathInfo.begin, resultPathInfo.size);
-            var agentPathBuffer = agentPaths[index];
-
-            var pathLength = math.min(resultNodes.Length, agentPathBuffer.Length);
+            
+            var pathLength = math.min(resultNodes.Length, agentPaths.Length - index);
             for (var j = 0; j < pathLength; j++)
             {
-                agentPathBuffer[j] = resultNodes[j];
+                agentPaths[index + j] = resultNodes[j];
             }
 
             var navigator = agentNavigators[index];

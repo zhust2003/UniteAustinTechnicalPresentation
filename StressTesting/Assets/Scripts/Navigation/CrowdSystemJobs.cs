@@ -6,17 +6,19 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.Experimental.AI;
+using Unity.Burst;
 
 public partial class CrowdSystem
 {
+    [BurstCompile]
     public struct CheckPathNeededJob : IJobParallelFor
     {
         [ReadOnly]
-        public ComponentDataArray<CrowdAgentNavigator> agentNavigators;
+        public NativeArray<CrowdAgentNavigator> agentNavigators;
         [ReadOnly]
         public NativeArray<uint> pathRequestIdForAgent;
 
-        public NativeArray<bool1> planPathForAgent;
+        public NativeArray<bool> planPathForAgent;
 
         public void Execute(int index)
         {
@@ -31,16 +33,17 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct MakePathRequestsJob : IJob
     {
         [ReadOnly]
         public NavMeshQuery query;
         [ReadOnly]
-        public ComponentDataArray<CrowdAgent> agents;
+        public NativeArray<CrowdAgent> agents;
 
-        public ComponentDataArray<CrowdAgentNavigator> agentNavigators;
+        public NativeArray<CrowdAgentNavigator> agentNavigators;
 
-        public NativeArray<bool1> planPathForAgent;
+        public NativeArray<bool> planPathForAgent;
         public NativeArray<uint> pathRequestIdForAgent;
         public NativeArray<PathQueryQueueEcs.RequestEcs> pathRequests;
         public NativeArray<int> pathRequestsRange;
@@ -110,6 +113,7 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct EnqueueRequestsInQueriesJob : IJob
     {
         public NativeArray<PathQueryQueueEcs.RequestEcs> pathRequests;
@@ -148,6 +152,7 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct ForgetMovedRequestsJob : IJob
     {
         public NativeArray<PathQueryQueueEcs.RequestEcs> pathRequests;
@@ -179,13 +184,16 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct AdvancePathJob : IJobParallelFor
     {
         [ReadOnly]
-        public ComponentDataArray<CrowdAgent> agents;
+        public NativeArray<CrowdAgent> agents;
 
-        public ComponentDataArray<CrowdAgentNavigator> agentNavigators;
-        public FixedArrayArray<PolygonId> paths;
+        public NativeArray<CrowdAgentNavigator> agentNavigators;
+        [NativeDisableParallelForRestriction]
+        public NativeArray<PolygonId> paths;
+        public int pathsStride; // 每个代理的路径长度
 
         public void Execute(int index)
         {
@@ -193,12 +201,21 @@ public partial class CrowdSystem
             if (!agentNavigator.active)
                 return;
 
-            var path = paths[index];
+            // 计算当前代理的路径起始索引
+            int pathStartIndex = index * pathsStride;
+            
+            if (pathStartIndex + agentNavigator.pathSize > paths.Length)
+            {
+                agentNavigator.pathSize = 0; // 重置路径大小以避免后续访问
+                agentNavigators[index] = agentNavigator;
+                return;
+            }
+            
             var agLoc = agents[index].location;
             var i = 0;
             for (; i < agentNavigator.pathSize; ++i)
             {
-                if (path[i] == agLoc.polygon)
+                if (paths[pathStartIndex + i] == agLoc.polygon)
                     break;
             }
 
@@ -234,7 +251,7 @@ public partial class CrowdSystem
             {
                 for (int src = i, dst = 0; src < agentNavigator.pathSize; src++, dst++)
                 {
-                    path[dst] = path[src];
+                    paths[pathStartIndex + dst] = paths[pathStartIndex + src];
                 }
                 agentNavigator.pathSize -= i;
                 agentNavigators[index] = agentNavigator;
@@ -242,16 +259,18 @@ public partial class CrowdSystem
         }
     }
 
-    [ComputeJobOptimization]
+    [BurstCompile]
     public struct UpdateVelocityJob : IJobParallelFor
     {
         [ReadOnly]
         public NavMeshQuery query;
         [ReadOnly]
-        public FixedArrayArray<PolygonId> paths;
+        [NativeDisableParallelForRestriction]
+        public NativeArray<PolygonId> paths;
+        public int pathsStride; // 每个代理的路径长度
 
-        public ComponentDataArray<CrowdAgentNavigator> agentNavigators;
-        public ComponentDataArray<CrowdAgent> agents;
+        public NativeArray<CrowdAgentNavigator> agentNavigators;
+        public NativeArray<CrowdAgent> agents;
 
         [DeallocateOnJobCompletion]
         [NativeDisableParallelForRestriction]
@@ -288,8 +307,17 @@ public partial class CrowdSystem
                 if (agentNavigator.pathSize > 1)
                 {
                     var cornerCount = 0;
-                    var path = paths[index];
-                    var pathStatus = PathUtils.FindStraightPath(query, currentPos, endPos, path, agentNavigator.pathSize, ref straightPath, ref straightPathFlags, ref vertexSide, ref cornerCount, straightPath.Length);
+                    // 计算当前代理的路径起始索引
+                    int pathStartIndex = index * pathsStride;
+                    // 创建一个临时的NativeArray来存储当前代理的路径
+                    var tempPath = new NativeArray<PolygonId>(agentNavigator.pathSize, Allocator.Temp);
+                    for (int i = 0; i < agentNavigator.pathSize; i++)
+                    {
+                        tempPath[i] = paths[pathStartIndex + i];
+                    }
+                    
+                    var pathStatus = PathUtils.FindStraightPath(query, currentPos, endPos, tempPath, agentNavigator.pathSize, ref straightPath, ref straightPathFlags, ref vertexSide, ref cornerCount, straightPath.Length);
+                    tempPath.Dispose();
 
                     if (pathStatus.IsSuccess() && cornerCount > 1)
                     {
@@ -317,12 +345,13 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct MoveLocationsJob : IJobParallelFor
     {
         [ReadOnly]
         public NavMeshQuery query;
 
-        public ComponentDataArray<CrowdAgent> agents;
+        public NativeArray<CrowdAgent> agents;
         public float dt;
 
         public void Execute(int index)
@@ -348,6 +377,7 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct UpdateQueriesJob : IJob
     {
         public PathQueryQueueEcs queryQueue;
@@ -359,11 +389,12 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct ApplyQueryResultsJob : IJob
     {
         public PathQueryQueueEcs queryQueue;
-        public FixedArrayArray<PolygonId> paths;
-        public ComponentDataArray<CrowdAgentNavigator> agentNavigators;
+        public NativeArray<PolygonId> paths;
+        public NativeArray<CrowdAgentNavigator> agentNavigators;
 
         public void Execute()
         {
@@ -375,6 +406,7 @@ public partial class CrowdSystem
         }
     }
 
+    [BurstCompile]
     public struct QueryCleanupJob : IJob
     {
         public PathQueryQueueEcs queryQueue;

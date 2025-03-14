@@ -4,62 +4,80 @@ using UnityEngine;
 using Unity.Entities;
 
 [UpdateAfter(typeof(MinionCollisionSystem))]
-public class ArcherMinionSystem : JobComponentSystem
+public partial class ArcherMinionSystem : SystemBase
 {
-	public struct RangedMinions
-	{
-		[ReadOnly]
-		public ComponentDataArray<RangedUnitData> rangedMinionsFilter;
-		[ReadOnly]
-		public ComponentDataArray<AliveMinionData> aliveMinionsFilter;
-		public ComponentDataArray<MinionData> minions;
-		public ComponentDataArray<UnitTransformData> transforms;
-		public ComponentDataArray<MinionBitmask> bitmask;
-
-		public int Length;
-	}
-
-	[Inject]
-	private RangedMinions rangedMinions;
-
-	[Inject]
-	private ComponentDataFromEntity<FormationClosestData> formationClosestDataFromEntity;
-	[Inject]
-	private ComponentDataFromEntity<FormationData> formationsFromEntity;
-	[Inject]
+	// 使用EntityQuery替代RangedMinions结构体
+	private EntityQuery rangedMinionsQuery;
+	
+	// 组件查询
+	private ComponentLookup<FormationClosestData> formationClosestDataFromEntity;
+	private ComponentLookup<FormationData> formationsFromEntity;
 	private UnitLifecycleManager lifeCycleManager;
 
 	private JobHandle archerJobFence;
 
 	public float archerAttackCycle = 0;
 
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnCreate()
 	{
-		if (rangedMinions.Length == 0 || !lifeCycleManager.createdArrows.IsCreated) return inputDeps;
+		// 初始化EntityQuery
+		rangedMinionsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<RangedUnitData>(),
+			ComponentType.ReadOnly<AliveMinionData>(),
+			ComponentType.ReadWrite<MinionData>(),
+			ComponentType.ReadOnly<UnitTransformData>(),
+			ComponentType.ReadOnly<MinionBitmask>()
+		);
+		
+		// 获取系统引用
+		lifeCycleManager = World.GetOrCreateSystemManaged<UnitLifecycleManager>();
+	}
+
+	protected override void OnUpdate()
+	{
+		// 获取组件查询
+		formationClosestDataFromEntity = GetComponentLookup<FormationClosestData>(true);
+		formationsFromEntity = GetComponentLookup<FormationData>(true);
+		
+		// 检查是否有符合条件的实体
+		if (rangedMinionsQuery.IsEmpty || !lifeCycleManager.createdArrows.IsCreated) 
+			return;
 
 		float prevArcherAttackCycle = archerAttackCycle;
-		archerAttackCycle += Time.deltaTime;
+		archerAttackCycle += SystemAPI.Time.DeltaTime;
 		if (archerAttackCycle > SimulationSettings.Instance.ArcherAttackTime)
 		{
 			archerAttackCycle -= SimulationSettings.Instance.ArcherAttackTime;
 		}
 
+		// 获取组件数据
+		var minions = rangedMinionsQuery.ToComponentDataArray<MinionData>(Allocator.TempJob);
+		var transforms = rangedMinionsQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+		var bitmask = rangedMinionsQuery.ToComponentDataArray<MinionBitmask>(Allocator.TempJob);
+		
 		var archerJob = new ArcherJob
 		{
-			createdArrowsQueue = lifeCycleManager.createdArrows,
-			archers = rangedMinions.minions,
-			transforms = rangedMinions.transforms,
+			createdArrowsQueue = lifeCycleManager.createdArrows.AsParallelWriter(),
+			archers = minions,
+			transforms = transforms,
 			formations = formationsFromEntity,
 			closestFormationsFromEntity = formationClosestDataFromEntity,
-			minionConstData = rangedMinions.bitmask,
-			randomizer = Time.frameCount,
+			minionConstData = bitmask,
+			randomizer = (int)SystemAPI.Time.ElapsedTime % 10000,
 			archerHitTime = SimulationSettings.Instance.ArcherHitTime,
 			archerAttackCycle = archerAttackCycle,
 			prevArcherAttackCycle = prevArcherAttackCycle
 		};
 
-		archerJobFence = archerJob.Schedule(rangedMinions.Length, SimulationState.SmallBatchSize, inputDeps);
-
-		return archerJobFence;
+		archerJobFence = archerJob.Schedule(minions.Length, SimulationState.SmallBatchSize);
+		
+		// 确保在下一帧开始前完成作业
+		Dependency = archerJobFence;
+		
+		// 释放临时分配的内存
+		CompleteDependency();
+		minions.Dispose();
+		transforms.Dispose();
+		bitmask.Dispose();
 	}
 }

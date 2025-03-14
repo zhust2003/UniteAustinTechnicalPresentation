@@ -4,107 +4,157 @@ using Unity.Mathematics;
 using UnityEngine;
 using Unity.Entities;
 using UnityEngine.Profiling;
+using Unity.Burst;
 
 // This system should depend on the crowd system, but as systems can depend only on one thing, then all the formation
 // systems will execute before the prepare buckets system, which is bad. That is why this system depends on the buckets
 // system, to ensure the buckets system begins execution.
 [UpdateAfter(typeof(PrepareBucketsSystem))]
-public class FormationSystem : JobComponentSystem
+public partial class FormationSystem : SystemBase
 {
-	public struct Formations
-	{
-		public ComponentDataArray<FormationData> data;
-		public FixedArrayArray<EntityRef> unitData;
-		public ComponentDataArray<FormationNavigationData> navigationData;
-		public ComponentDataArray<FormationClosestData> closestFormations;
-		public ComponentDataArray<CrowdAgentNavigator> navigators;
-		public ComponentDataArray<CrowdAgent> agents;
-		public ComponentDataArray<FormationHighLevelPath> highLevelPaths;
-		public EntityArray entities;
-
-		public int Length;
-	}
-
-	[Inject]
-	private Formations formations;
-
-	[Inject]
-	private ComponentDataFromEntity<IndexInFormationData> indicesInFormation;
-
+	private EntityQuery formationsQuery;
+	private ComponentLookup<IndexInFormationData> indicesInFormationLookup;
 
 	//public static readonly int GroundLayermask = 1 << LayerMask.NameToLayer("Ground");
 	public const int GroundLayermask = 1 << 8;
 
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	// 添加复制组件数据的结构体
+	[BurstCompile]
+	private struct CopyComponentData<T> : IJobParallelFor where T : struct, IComponentData
+	{
+		[ReadOnly] public NativeArray<T> Source;
+		[WriteOnly] public NativeArray<T> Results;
+
+		public void Execute(int index)
+		{
+			Results[index] = Source[index];
+		}
+	}
+
+	// 添加复制实体的结构体
+	[BurstCompile]
+	private struct CopyEntities : IJobParallelFor
+	{
+		[ReadOnly] public NativeArray<Entity> Source;
+		[WriteOnly] public NativeArray<Entity> Results;
+
+		public void Execute(int index)
+		{
+			Results[index] = Source[index];
+		}
+	}
+
+	protected override void OnCreate()
+	{
+		formationsQuery = GetEntityQuery(
+			ComponentType.ReadWrite<FormationData>(),
+			ComponentType.ReadOnly<EntityRef>(),
+			ComponentType.ReadWrite<FormationNavigationData>(),
+			ComponentType.ReadWrite<FormationClosestData>(),
+			ComponentType.ReadWrite<CrowdAgentNavigator>(),
+			ComponentType.ReadOnly<CrowdAgent>(),
+			ComponentType.ReadOnly<FormationHighLevelPath>()
+		);
+
+		indicesInFormationLookup = GetComponentLookup<IndexInFormationData>();
+	}
+
+	protected override void OnUpdate()
 	{
 		// Realloc();
-		if (formations.Length == 0) return inputDeps;
+		if (formationsQuery.IsEmpty) return;
 		
 		//NativeArrayExtensions.ResizeNativeArray(ref raycastHits, math.max(raycastHits.Length,minions.Length));
 		//NativeArrayExtensions.ResizeNativeArray(ref raycastCommands, math.max(raycastCommands.Length, minions.Length));
 		
+		// 更新组件查询
+		indicesInFormationLookup.Update(this);
+
+		// 获取组件数据
+		var formationDataArray = formationsQuery.ToComponentDataArray<FormationData>(Allocator.TempJob);
+		var formationNavigationDataArray = formationsQuery.ToComponentDataArray<FormationNavigationData>(Allocator.TempJob);
+		var formationClosestDataArray = formationsQuery.ToComponentDataArray<FormationClosestData>(Allocator.TempJob);
+		var crowdAgentNavigatorArray = formationsQuery.ToComponentDataArray<CrowdAgentNavigator>(Allocator.TempJob);
+		var crowdAgentArray = formationsQuery.ToComponentDataArray<CrowdAgent>(Allocator.TempJob);
+		var formationHighLevelPathArray = formationsQuery.ToComponentDataArray<FormationHighLevelPath>(Allocator.TempJob);
+		var formationEntities = formationsQuery.ToEntityArray(Allocator.TempJob);
+
 		var copyNavigationJob = new CopyNavigationPositionToFormation
 		{
-			formations = formations.data,
-			agents = formations.agents,
-			navigators = formations.navigators,
-			navigationData = formations.navigationData,
-			dt = Time.deltaTime
+			formations = formationDataArray,
+			agents = crowdAgentArray,
+			navigators = crowdAgentNavigatorArray,
+			navigationData = formationNavigationDataArray,
+			dt = SystemAPI.Time.DeltaTime
 		};
-		var copyNavigationJobHandle = copyNavigationJob.Schedule(formations.Length, SimulationState.SmallBatchSize, inputDeps);
+		var copyNavigationJobHandle = copyNavigationJob.Schedule(formationDataArray.Length, SimulationState.SmallBatchSize);
 
-		var copyFormations = new NativeArray<FormationData>(formations.data.Length, Allocator.TempJob);
+		var copyFormations = new NativeArray<FormationData>(formationDataArray.Length, Allocator.TempJob);
 		var copyFormationsJob = new CopyComponentData<FormationData>
 		{
-			Source = formations.data,
+			Source = formationDataArray,
 			Results = copyFormations
 		};
-		var copyFormationJobHandle = copyFormationsJob.Schedule(formations.data.Length, SimulationState.HugeBatchSize, copyNavigationJobHandle);
+		var copyFormationJobHandle = copyFormationsJob.Schedule(formationDataArray.Length, SimulationState.HugeBatchSize, copyNavigationJobHandle);
 		
-		var copyFormationEntities = new NativeArray<Entity>(formations.entities.Length, Allocator.TempJob);
+		var copyFormationEntities = new NativeArray<Entity>(formationEntities.Length, Allocator.TempJob);
 		var copyFormationEntitiesJob = new CopyEntities
 		{
-			Source = formations.entities,
+			Source = formationEntities,
 			Results = copyFormationEntities
 		};
-		var copyFormationEntitiesJobHandle = copyFormationEntitiesJob.Schedule(formations.entities.Length, SimulationState.HugeBatchSize, copyNavigationJobHandle);
+		var copyFormationEntitiesJobHandle = copyFormationEntitiesJob.Schedule(formationEntities.Length, SimulationState.HugeBatchSize, copyNavigationJobHandle);
 		var copyBarrier = JobHandle.CombineDependencies(copyFormationJobHandle, copyFormationEntitiesJobHandle);
 		
 		var closestSearchJob = new SearchClosestFormations
 		{
 			formations = copyFormations,
-			closestFormations = formations.closestFormations,
+			closestFormations = formationClosestDataArray,
 			formationEntities = copyFormationEntities
 		};
-		var closestSearchJobHandle = closestSearchJob.Schedule(formations.Length, SimulationState.HugeBatchSize, copyBarrier);
+		var closestSearchJobHandle = closestSearchJob.Schedule(formationDataArray.Length, SimulationState.HugeBatchSize, copyBarrier);
 		
 		var updateFormationsJob = new UpdateFormations
 		{
-			closestFormations = formations.closestFormations,
-			formationNavigators = formations.navigators,
-			formationHighLevelPath = formations.highLevelPaths,
-			formations = formations.data,
+			closestFormations = formationClosestDataArray,
+			formationHighLevelPath = formationHighLevelPathArray,
+			formations = formationDataArray,
+			formationNavigators = crowdAgentNavigatorArray
 		};
-		var updateFormationsJobHandle = updateFormationsJob.Schedule(formations.Length, SimulationState.SmallBatchSize, closestSearchJobHandle);
+		var updateFormationsJobHandle = updateFormationsJob.Schedule(formationDataArray.Length, SimulationState.SmallBatchSize, closestSearchJobHandle);
 		
-		// Pass two, rearrangeing the minion indices
-		// TODO Split this system into systems that make sense 
-		
-		// calculate formation movement
-		// advance formations
-		// calculate minion position and populate the array
-		
-		return updateFormationsJobHandle;
+		// 等待所有作业完成
+		updateFormationsJobHandle.Complete();
+
+		// 将计算结果写回到实体
+		for (int i = 0; i < formationEntities.Length; i++)
+		{
+			EntityManager.SetComponentData(formationEntities[i], formationDataArray[i]);
+			EntityManager.SetComponentData(formationEntities[i], formationNavigationDataArray[i]);
+			EntityManager.SetComponentData(formationEntities[i], formationClosestDataArray[i]);
+			EntityManager.SetComponentData(formationEntities[i], crowdAgentNavigatorArray[i]);
+		}
+
+		// 清理临时分配的数组
+		formationDataArray.Dispose();
+		formationNavigationDataArray.Dispose();
+		formationClosestDataArray.Dispose();
+		crowdAgentNavigatorArray.Dispose();
+		crowdAgentArray.Dispose();
+		formationHighLevelPathArray.Dispose();
+		formationEntities.Dispose();
+		copyFormations.Dispose();
+		copyFormationEntities.Dispose();
 	}
 	
-	[ComputeJobOptimization]
+	[BurstCompile]
 	private struct UpdateFormations : IJobParallelFor
 	{
-		public ComponentDataArray<FormationData> formations;
-		[ReadOnly] public ComponentDataArray<FormationClosestData> closestFormations;
-		[ReadOnly] public ComponentDataArray<FormationHighLevelPath> formationHighLevelPath;
+		public NativeArray<FormationData> formations;
+		[ReadOnly] public NativeArray<FormationClosestData> closestFormations;
+		[ReadOnly] public NativeArray<FormationHighLevelPath> formationHighLevelPath;
 
-		public ComponentDataArray<CrowdAgentNavigator> formationNavigators;
+		public NativeArray<CrowdAgentNavigator> formationNavigators;
 
 		public void Execute(int index)
 		{
@@ -128,7 +178,7 @@ public class FormationSystem : JobComponentSystem
 
 			float3 targetPosition = formationNavigators[index].requestedDestination;
 			bool foundTargetPosition = false;
-			if (closestFormations[index].closestFormation != new Entity())
+			if (closestFormations[index].closestFormation != Entity.Null)
 			{
 				var closestPosition = closestFormations[index].closestFormationPosition;
 
@@ -163,12 +213,12 @@ public class FormationSystem : JobComponentSystem
 		}
 	}
 
-	[ComputeJobOptimization]
+	[BurstCompile]
 	private struct SearchClosestFormations : IJobParallelFor
 	{
-		[DeallocateOnJobCompletion] [ReadOnly] public NativeArray<FormationData> formations;
-		[DeallocateOnJobCompletion] [ReadOnly] public NativeArray<Entity> formationEntities;
-		public ComponentDataArray<FormationClosestData> closestFormations;
+		[ReadOnly] public NativeArray<FormationData> formations;
+		[ReadOnly] public NativeArray<Entity> formationEntities;
+		public NativeArray<FormationClosestData> closestFormations;
 
 		public void Execute(int index)
 		{
@@ -192,22 +242,22 @@ public class FormationSystem : JobComponentSystem
 				}
 			}
 
-			if(closestIndex != -1) data.closestFormation = formationEntities[closestIndex]; else data.closestFormation = new Entity();
+			if(closestIndex != -1) data.closestFormation = formationEntities[closestIndex]; else data.closestFormation = Entity.Null;
 			if (closestIndex != -1) data.closestFormationPosition = formations[closestIndex].Position;
 
 			closestFormations[index] = data;
 		}
 	}
 
-	[ComputeJobOptimization]
+	[BurstCompile]
 	private struct CopyNavigationPositionToFormation : IJobParallelFor
 	{
-		public ComponentDataArray<FormationData> formations;
+		public NativeArray<FormationData> formations;
 		[ReadOnly]
-		public ComponentDataArray<CrowdAgent> agents;
+		public NativeArray<CrowdAgent> agents;
 		[ReadOnly]
-		public ComponentDataArray<CrowdAgentNavigator> navigators;
-		public ComponentDataArray<FormationNavigationData> navigationData;
+		public NativeArray<CrowdAgentNavigator> navigators;
+		public NativeArray<FormationNavigationData> navigationData;
 		[ReadOnly]
 		public float dt;
 

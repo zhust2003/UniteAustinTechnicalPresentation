@@ -5,6 +5,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Entities;
 using UnityEngine.Experimental.AI;
+using UnityEngine;
 
 // The whole structure should only be accessed with pointers!
 [StructLayout(LayoutKind.Sequential)]
@@ -82,8 +83,16 @@ public struct MinionPathData : IComponentData
 	public int currentCornerIndex;
 }
 
-
-public class MinionComponent : ComponentDataWrapper<MinionData>
+public class MinionComponent : MonoBehaviour
 {
-	
+	public MinionData Value;
+}
+
+public class MinionBaker : Baker<MinionComponent>
+{
+	public override void Bake(MinionComponent authoring)
+	{
+		var entity = GetEntity(TransformUsageFlags.Dynamic);
+		AddComponent(entity, authoring.Value);
+	}
 }

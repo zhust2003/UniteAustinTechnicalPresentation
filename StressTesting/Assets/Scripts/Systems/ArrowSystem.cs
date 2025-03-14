@@ -3,126 +3,175 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using Unity.Entities;
+using Unity.Burst;
 
 [UpdateAfter(typeof(MinionSystem))]
-public class ArrowSystem : JobComponentSystem
+public partial class ArrowSystem : SystemBase
 {
-	public struct Arrows
-	{
-		public ComponentDataArray<ArrowData> data;
-		public EntityArray entities;
-
-		public int Length;
-	}
-
-	public struct Minions
-	{
-		[ReadOnly]
-		public ComponentDataArray<AliveMinionData> aliveMinionsFilter;
-		[ReadOnly]
-		public ComponentDataArray<MinionBitmask> constData;
-		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-		public EntityArray entities;
-
-		public int Length;
-	}
-
-	[Inject]
-	private Arrows arrows;
-
-	[Inject]
-	private Minions minions;
-
-	[Inject]
+	private EntityQuery arrowQuery;
+	private EntityQuery minionQuery;
+	
 	private MinionSystem minionSystem;
-
+	private UnitLifecycleManager lifecycleManager;
+	
 	private NativeArray<RaycastHit> raycastHits;
 	private NativeArray<RaycastCommand> raycastCommands;
 
-	[Inject]
-	private UnitLifecycleManager lifecycleManager;
-
-	protected override void OnDestroyManager ()
+	protected override void OnCreate()
 	{
-		base.OnDestroyManager ();
+		arrowQuery = GetEntityQuery(
+			ComponentType.ReadWrite<ArrowData>()
+		);
+		
+		minionQuery = GetEntityQuery(
+			ComponentType.ReadOnly<AliveMinionData>(),
+			ComponentType.ReadOnly<MinionBitmask>(),
+			ComponentType.ReadOnly<UnitTransformData>()
+		);
+	}
+
+	protected override void OnDestroy()
+	{
 		if (raycastHits.IsCreated) raycastHits.Dispose();
 		if (raycastCommands.IsCreated) raycastCommands.Dispose();
 	}
 
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnUpdate()
 	{
-		if (minionSystem == null) return inputDeps;
-
-		if (arrows.Length == 0) return inputDeps;
-		if (minions.Length == 0) return inputDeps;
-
-		// Update seems to be called after Play mode has been exited
-
-		// ============ REALLOC ===============
-		// todo fix nativearray
-		NativeArrayExtensions.ResizeNativeArray(ref raycastHits, math.max(raycastHits.Length, arrows.Length));
-		NativeArrayExtensions.ResizeNativeArray(ref raycastCommands, math.max(raycastCommands.Length, arrows.Length));
-
-		// ============ JOB CREATION ===============
-
-		var arrowJob = new ProgressArrowJob
+		// 获取系统引用
+		if (minionSystem == null)
 		{
-			raycastCommands = raycastCommands,
-			arrows = arrows.data,
-			arrowEntities = arrows.entities,
-			dt = Time.deltaTime,
-			allMinionTransforms = minions.transforms,
-			buckets = minionSystem.CollisionBuckets,
-			minionConstData = minions.constData,
-			AttackCommands = CommandSystem.AttackCommandsConcurrent,
-			minionEntities = minions.entities,
-			queueForKillingEntities = lifecycleManager.queueForKillingEntities
-		};
-			
-		var stopArrowJob = new StopArrowsJob
-		{
-			raycastHits = raycastHits,
-			arrows = arrows.data,
-			arrowEntities = arrows.entities,
-			stoppedArrowsQueue = lifecycleManager.deathQueue
-		};
-
-		var arrowJobFence = arrowJob.Schedule(arrows.Length, SimulationState.SmallBatchSize, JobHandle.CombineDependencies(inputDeps, CommandSystem.AttackCommandsFence));
-		arrowJobFence.Complete();
-		var raycastJobFence = RaycastCommand.ScheduleBatch(raycastCommands, raycastHits, SimulationState.SmallBatchSize, arrowJobFence);
-		var stopArrowJobFence = stopArrowJob.Schedule(arrows.Length, SimulationState.SmallBatchSize, raycastJobFence);
-
-		CommandSystem.AttackCommandsConcurrentFence = JobHandle.CombineDependencies(stopArrowJobFence, CommandSystem.AttackCommandsConcurrentFence);
-		// Complete arrow movement
-		return stopArrowJobFence;
-	}
-	
-	//[ComputeJobOptimization]
-	public struct StopArrowsJob : IJobParallelFor
-	{
-		public ComponentDataArray<ArrowData> arrows;
-		[ReadOnly]
-		public EntityArray arrowEntities;
-
-		[ReadOnly]
-		public NativeArray<RaycastHit> raycastHits;
-
-		public NativeQueue<Entity>.Concurrent stoppedArrowsQueue;
-
-		public void Execute(int index)
-		{
-			if (arrows[index].active) 
+			try
 			{
-				var arrow = arrows[index];
-
-				if (arrow.position.y <= raycastHits[index].point.y)
-				{
-					arrow.active = false;	
-					arrows[index] = arrow;
-					stoppedArrowsQueue.Enqueue (arrowEntities [index]);
-				}
+				minionSystem = World.GetOrCreateSystemManaged<MinionSystem>();
+			}
+			catch
+			{
+				Debug.LogError("无法获取MinionSystem系统");
+				return;
 			}
 		}
+		
+		if (lifecycleManager == null)
+		{
+			try
+			{
+				lifecycleManager = World.GetOrCreateSystemManaged<UnitLifecycleManager>();
+			}
+			catch
+			{
+				Debug.LogError("无法获取UnitLifecycleManager系统");
+				return;
+			}
+		}
+			
+		if (minionSystem == null || lifecycleManager == null) return;
+
+		int arrowCount = arrowQuery.CalculateEntityCount();
+		int minionCount = minionQuery.CalculateEntityCount();
+		
+		if (arrowCount == 0) return;
+		if (minionCount == 0) return;
+
+		// 确保NativeArray大小足够，但避免频繁重新创建
+		bool needToResizeArrays = false;
+		
+		if (!raycastHits.IsCreated)
+		{
+			raycastHits = new NativeArray<RaycastHit>(math.max(64, arrowCount), Allocator.Persistent);
+			needToResizeArrays = false;
+		}
+		else if (raycastHits.Length < arrowCount)
+		{
+			needToResizeArrays = true;
+		}
+		
+		if (!raycastCommands.IsCreated)
+		{
+			raycastCommands = new NativeArray<RaycastCommand>(math.max(64, arrowCount), Allocator.Persistent);
+			needToResizeArrays = false;
+		}
+		else if (raycastCommands.Length < arrowCount)
+		{
+			needToResizeArrays = true;
+		}
+		
+		// 只有在确实需要时才重新分配数组
+		if (needToResizeArrays)
+		{
+			int newSize = math.max(raycastHits.Length * 2, arrowCount);
+			
+			var newRaycastHits = new NativeArray<RaycastHit>(newSize, Allocator.Persistent);
+			var newRaycastCommands = new NativeArray<RaycastCommand>(newSize, Allocator.Persistent);
+			
+			// 复制旧数据
+			NativeArray<RaycastHit>.Copy(raycastHits, newRaycastHits, raycastHits.Length);
+			NativeArray<RaycastCommand>.Copy(raycastCommands, newRaycastCommands, raycastCommands.Length);
+			
+			// 释放旧数组
+			raycastHits.Dispose();
+			raycastCommands.Dispose();
+			
+			// 使用新数组
+			raycastHits = newRaycastHits;
+			raycastCommands = newRaycastCommands;
+		}
+
+		// 获取必要的组件访问器
+		var queueForKillingEntities = lifecycleManager.queueForKillingEntities;
+		var deathQueue = lifecycleManager.deathQueue;
+		float deltaTime = SystemAPI.Time.DeltaTime;
+
+		// 创建本地变量以避免捕获this
+		var localRaycastCommands = raycastCommands;
+		
+		// 第一步：更新箭的位置
+		Entities
+			.WithName("UpdateArrowPositions")
+			.WithAll<ArrowData>()
+			.ForEach((Entity arrowEntity, int entityInQueryIndex, ref ArrowData arrow) =>
+			{
+				if (arrow.active)
+				{
+					arrow.position += arrow.velocity * deltaTime;
+					arrow.velocity.y += SimulationState.Gravity * deltaTime;
+					
+					// 设置射线命令
+					if (entityInQueryIndex < localRaycastCommands.Length)
+					{
+						localRaycastCommands[entityInQueryIndex] = new RaycastCommand(
+							arrow.position,
+							Vector3.down,
+							QueryParameters.Default,
+							distance: 100f);
+					}
+				}
+			})
+			.WithoutBurst()
+			.Run();
+			
+		// 执行射线检测
+		RaycastCommand.ScheduleBatch(raycastCommands, raycastHits, 8).Complete();
+		
+		// 第二步：处理射线检测结果和处理deathQueue
+		Entities
+			.WithName("ProcessRaycastResults")
+			.WithAll<ArrowData>()
+			.ForEach((Entity arrowEntity, int entityInQueryIndex, ref ArrowData arrow) =>
+			{
+				if (arrow.active && entityInQueryIndex < raycastHits.Length)
+				{
+					if (arrow.position.y <= raycastHits[entityInQueryIndex].point.y)
+					{
+						arrow.active = false;
+						deathQueue.Enqueue(arrowEntity);
+					}
+				}
+			})
+			.WithoutBurst()
+			.Run();
+			
+		// 更新CommandSystem的依赖关系
+		CommandSystem.AttackCommandsConcurrentFence = JobHandle.CombineDependencies(Dependency, CommandSystem.AttackCommandsConcurrentFence);
 	}
 }

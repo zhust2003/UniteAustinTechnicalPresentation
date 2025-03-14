@@ -3,30 +3,32 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using Unity.Entities;
+using Unity.Burst;
 
 //[ComputeJobOptimization]
+[BurstCompile]
 public struct ProgressArrowJob : IJobParallelFor
 {
-	public ComponentDataArray<ArrowData> arrows;
+	public NativeArray<ArrowData> arrows;
 	[ReadOnly]
-	public EntityArray arrowEntities;
+	public NativeArray<Entity> arrowEntities;
 
 	[ReadOnly]
-	public NativeMultiHashMap<int, int> buckets;
+	public NativeParallelMultiHashMap<int, int> buckets;
 
 	[ReadOnly]
-	public ComponentDataArray<UnitTransformData> allMinionTransforms;
+	public NativeArray<UnitTransformData> allMinionTransforms;
 	[ReadOnly]
-	public ComponentDataArray<MinionBitmask> minionConstData;
+	public NativeArray<MinionBitmask> minionConstData;
 
 	
-	public NativeQueue<AttackCommand>.Concurrent AttackCommands;
-	public NativeQueue<Entity>.Concurrent queueForKillingEntities;
+	public NativeQueue<AttackCommand>.ParallelWriter AttackCommands;
+	public NativeQueue<Entity>.ParallelWriter queueForKillingEntities;
 
 	public NativeArray<RaycastCommand> raycastCommands;
 
 	[ReadOnly]
-	public EntityArray minionEntities;
+	public NativeArray<Entity> minionEntities;
 
 	[ReadOnly]
 	public float dt;
@@ -44,7 +46,7 @@ public struct ProgressArrowJob : IJobParallelFor
 			// Check if we hit something
 			int i = 0;
 			int hash = MinionSystem.Hash(arrow.position);
-			NativeMultiHashMapIterator<int> iterator;
+			NativeParallelMultiHashMapIterator<int> iterator;
 			bool found = buckets.TryGetFirstValue(hash, out i, out iterator);
 			int iterations = 0;
 

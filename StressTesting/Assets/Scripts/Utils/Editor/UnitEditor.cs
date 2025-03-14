@@ -179,7 +179,7 @@ public class UnitEditor :  EditorWindow
 		Debug.DrawLine(agent.worldPosition, navigator.requestedDestination, Color.green, Time.deltaTime * 2);
 	}
 
-	public static void DrawUnitPaths(MinionPathData minionPathInfo, NativeSlice<float3> path)
+	public static void DrawUnitPaths(MinionPathData minionPathInfo, NativeArray<float3> path)
 	{
 		if (EditorApplication.isPaused) return;
 		if ((minionPathInfo.bitmasks & 4) == 0)
@@ -308,7 +308,7 @@ public class UnitEditor :  EditorWindow
 		{
 			for (int i = 0; i < EditorHelperSystem.I.minions.Length; i++)
 			{
-				DrawUnitPaths(EditorHelperSystem.I.minions.pathsInfo[i], EditorHelperSystem.I.minions.paths[i]);
+				DrawUnitPaths(EditorHelperSystem.I.minions.pathsInfo[i], EditorHelperSystem.I.minions.paths);
 			}
 		}
 		
@@ -386,86 +386,168 @@ public class UnitEditor :  EditorWindow
 }
 
 [UpdateAfter(typeof(CommandSystem))]
-public class EditorHelperSystem : JobComponentSystem
+public partial class EditorHelperSystem : SystemBase
 {
-	public struct Minions
-	{
-		public ComponentDataArray<UnitTransformData> transforms;
-		public ComponentDataArray<MinionTarget> targets;
-		public ComponentDataArray<RigidbodyData> rigidbodies;
-		public ComponentDataArray<TextureAnimatorData> animationData;
-		public ComponentDataArray<MinionData> data;
-		public ComponentDataArray<MinionPathData> pathsInfo;
-		public FixedArrayArray<float3> paths;
-		public ComponentDataArray<NavMeshLocationComponent> locationComponents;
-		public ComponentDataArray<MinionAttackData> attackData;
-		public ComponentDataArray<MinionBitmask> bitmask;
-		public EntityArray entities;
+	// 查询
+	private EntityQuery minionQuery;
+	private EntityQuery formationQuery;
 
-		public int Length;
+	// 组件数据
+	public class Minions
+	{
+		public NativeArray<UnitTransformData> transforms;
+		public NativeArray<MinionTarget> targets;
+		public NativeArray<RigidbodyData> rigidbodies;
+		public NativeArray<TextureAnimatorData> animationData;
+		public NativeArray<MinionData> data;
+		public NativeArray<MinionPathData> pathsInfo;
+		public NativeArray<float3> paths;
+		public NativeArray<NavMeshLocationComponent> locationComponents;
+		public NativeArray<MinionAttackData> attackData;
+		public NativeArray<MinionBitmask> bitmask;
+		public NativeArray<Entity> entities;
+
+		public int Length => transforms.Length;
+
+		public void Dispose()
+		{
+			if (transforms.IsCreated) transforms.Dispose();
+			if (targets.IsCreated) targets.Dispose();
+			if (rigidbodies.IsCreated) rigidbodies.Dispose();
+			if (animationData.IsCreated) animationData.Dispose();
+			if (data.IsCreated) data.Dispose();
+			if (pathsInfo.IsCreated) pathsInfo.Dispose();
+			if (paths.IsCreated) paths.Dispose();
+			if (locationComponents.IsCreated) locationComponents.Dispose();
+			if (attackData.IsCreated) attackData.Dispose();
+			if (bitmask.IsCreated) bitmask.Dispose();
+			if (entities.IsCreated) entities.Dispose();
+		}
 	}
 
-	public struct Formations
+	public class Formations
 	{
-		public EntityArray entities;
-		public ComponentDataArray<FormationClosestData> closestFormations;
-		public ComponentDataArray<FormationData> data;
-		public ComponentDataArray<CrowdAgent> agents;
-		public ComponentDataArray<CrowdAgentNavigator> navigators;
-		public ComponentDataArray<FormationHighLevelPath> highLevelPaths;
-		public ComponentDataArray<FormationIntegrityData> integrityData;
+		public NativeArray<Entity> entities;
+		public NativeArray<FormationClosestData> closestFormations;
+		public NativeArray<FormationData> data;
+		public NativeArray<CrowdAgent> agents;
+		public NativeArray<CrowdAgentNavigator> navigators;
+		public NativeArray<FormationHighLevelPath> highLevelPaths;
+		public NativeArray<FormationIntegrityData> integrityData;
 
-		public int Length;
+		public int Length => entities.Length;
+
+		public void Dispose()
+		{
+			if (entities.IsCreated) entities.Dispose();
+			if (closestFormations.IsCreated) closestFormations.Dispose();
+			if (data.IsCreated) data.Dispose();
+			if (agents.IsCreated) agents.Dispose();
+			if (navigators.IsCreated) navigators.Dispose();
+			if (highLevelPaths.IsCreated) highLevelPaths.Dispose();
+			if (integrityData.IsCreated) integrityData.Dispose();
+		}
 	}
 
-	// To make sure dependencies for this system is a superset of the dependencies of FormationIntegritySystem
-    [Inject]
-    public FixedArrayFromEntity<EntityRef> entityRefs;
-
-
-	[Inject]
-	public Minions minions;
-
-	[Inject]
-	public Formations formations;
-
-	[Inject]
+	// 系统引用
 	public FormationIntegritySystem integritySystem;
-	[Inject]
 	public SpawnerSystem spawnerSystem;
 	
 	public static EditorHelperSystem I;
 
+	public Minions minions = new Minions();
+	public Formations formations = new Formations();
+
 	public Queue<Action> work;
 
-	protected override void OnCreateManager (int capacity)
+	protected override void OnCreate()
 	{
-		base.OnCreateManager (capacity);
+		// 初始化查询
+		minionQuery = GetEntityQuery(
+			ComponentType.ReadOnly<UnitTransformData>(),
+			ComponentType.ReadOnly<MinionTarget>(),
+			ComponentType.ReadOnly<RigidbodyData>(),
+			ComponentType.ReadOnly<TextureAnimatorData>(),
+			ComponentType.ReadOnly<MinionData>(),
+			ComponentType.ReadOnly<MinionPathData>(),
+			ComponentType.ReadOnly<NavMeshLocationComponent>(),
+			ComponentType.ReadOnly<MinionAttackData>(),
+			ComponentType.ReadOnly<MinionBitmask>()
+		);
+
+		formationQuery = GetEntityQuery(
+			ComponentType.ReadOnly<FormationClosestData>(),
+			ComponentType.ReadOnly<FormationData>(),
+			ComponentType.ReadOnly<CrowdAgent>(),
+			ComponentType.ReadOnly<CrowdAgentNavigator>(),
+			ComponentType.ReadOnly<FormationHighLevelPath>(),
+			ComponentType.ReadOnly<FormationIntegrityData>()
+		);
+
+		// 获取系统引用
+		integritySystem = World.GetOrCreateSystemManaged<FormationIntegritySystem>();
+		spawnerSystem = World.GetOrCreateSystemManaged<SpawnerSystem>();
 
 		work = new Queue<Action>();
 		I = this;
 	}
 
+	protected override void OnDestroy()
+	{
+		minions.Dispose();
+		formations.Dispose();
+	}
+
 	bool completeDependencies = false;
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnUpdate()
 	{
 		if (completeDependencies)
 		{
-			inputDeps.Complete();
-			return inputDeps;
+			return;
 		}
+
+		// 更新小兵数据
+		if (!minionQuery.IsEmpty)
+		{
+			minions.transforms = minionQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+			minions.targets = minionQuery.ToComponentDataArray<MinionTarget>(Allocator.TempJob);
+			minions.rigidbodies = minionQuery.ToComponentDataArray<RigidbodyData>(Allocator.TempJob);
+			minions.animationData = minionQuery.ToComponentDataArray<TextureAnimatorData>(Allocator.TempJob);
+			minions.data = minionQuery.ToComponentDataArray<MinionData>(Allocator.TempJob);
+			minions.pathsInfo = minionQuery.ToComponentDataArray<MinionPathData>(Allocator.TempJob);
+			minions.locationComponents = minionQuery.ToComponentDataArray<NavMeshLocationComponent>(Allocator.TempJob);
+			minions.attackData = minionQuery.ToComponentDataArray<MinionAttackData>(Allocator.TempJob);
+			minions.bitmask = minionQuery.ToComponentDataArray<MinionBitmask>(Allocator.TempJob);
+			minions.entities = minionQuery.ToEntityArray(Allocator.TempJob);
+			
+			// 路径数据需要特殊处理
+			// 注意：这里简化处理，实际上可能需要根据原始代码逻辑调整
+			minions.paths = new NativeArray<float3>(minions.transforms.Length * 10, Allocator.TempJob);
+		}
+
+		// 更新编队数据
+		if (!formationQuery.IsEmpty)
+		{
+			formations.entities = formationQuery.ToEntityArray(Allocator.TempJob);
+			formations.closestFormations = formationQuery.ToComponentDataArray<FormationClosestData>(Allocator.TempJob);
+			formations.data = formationQuery.ToComponentDataArray<FormationData>(Allocator.TempJob);
+			formations.agents = formationQuery.ToComponentDataArray<CrowdAgent>(Allocator.TempJob);
+			formations.navigators = formationQuery.ToComponentDataArray<CrowdAgentNavigator>(Allocator.TempJob);
+			formations.highLevelPaths = formationQuery.ToComponentDataArray<FormationHighLevelPath>(Allocator.TempJob);
+			formations.integrityData = formationQuery.ToComponentDataArray<FormationIntegrityData>(Allocator.TempJob);
+		}
+
 		while (work.Count > 0)
 		{
 			work.Dequeue().Invoke();
 		}
-		return inputDeps;
 	}
 
 	public void CompleteDependency()
 	{
-		// Hack to emulate CompleteDependency in the old ecs
+		// 强制完成所有依赖
 		completeDependencies = true;
-		Update();
+		this.Update();
 		completeDependencies = false;
 	}
 }

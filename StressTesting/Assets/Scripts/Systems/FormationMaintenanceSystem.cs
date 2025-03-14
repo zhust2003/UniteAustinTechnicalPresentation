@@ -2,145 +2,214 @@
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Entities;
-
+using Unity.Burst;
 
 [UpdateAfter(typeof(FormationSystem))]
-public class FormationMaintenanceSystem : JobComponentSystem
+public partial class FormationMaintenanceSystem : SystemBase
 {
-	[Inject]
-	private FormationSystem.Formations formations;
+	private EntityQuery formationsQuery;
+	private EntityQuery minionsQuery;
+	private BufferLookup<EntityRef> formationsUnitDataLookup;
+	private ComponentLookup<IndexInFormationData> indicesInFormationLookup;
+	private ComponentLookup<FormationData> formationDataLookup;
 
-	[Inject]
-	private FixedArrayFromEntity<EntityRef> formationsUnitDataFromEntity;
-
-	[Inject]
-	private ComponentDataFromEntity<IndexInFormationData> indicesInFormation;
-
-	public struct Minions
+	protected override void OnCreate()
 	{
-		[ReadOnly]
-		public ComponentDataArray<AliveMinionData> aliveMinionsFilter;
-		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-		[ReadOnly]
-		public ComponentDataArray<IndexInFormationData> indicesInFormation;
+		formationsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<FormationData>()
+		);
 
-		public EntityArray entities;
+		minionsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<AliveMinionData>(),
+			ComponentType.ReadOnly<UnitTransformData>(),
+			ComponentType.ReadOnly<IndexInFormationData>()
+		);
 
-		public int Length;
+		formationsUnitDataLookup = GetBufferLookup<EntityRef>();
+		indicesInFormationLookup = GetComponentLookup<IndexInFormationData>();
+		formationDataLookup = GetComponentLookup<FormationData>(true);
 	}
-	
-	[Inject]
-	private Minions minions;
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
-	{
-		if (formations.Length == 0) return inputDeps;
 
-		var cleanUnitsJob = new ClearUnitDataJob
+	protected override void OnUpdate()
+	{
+		if (formationsQuery.IsEmpty) return;
+
+		// 更新组件查询
+		formationsUnitDataLookup.Update(this);
+		indicesInFormationLookup.Update(this);
+		formationDataLookup.Update(this);
+
+		// 获取组件数据
+		var formationDataArray = formationsQuery.ToComponentDataArray<FormationData>(Allocator.TempJob);
+		var formationEntities = formationsQuery.ToEntityArray(Allocator.TempJob);
+
+		var minionTransformsArray = minionsQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+		var minionIndicesArray = minionsQuery.ToComponentDataArray<IndexInFormationData>(Allocator.TempJob);
+		var minionEntitiesArray = minionsQuery.ToEntityArray(Allocator.TempJob);
+
+		// 第一步：清除单位数据
+		var clearUnitDataJob = new ClearUnitDataJob
 		{
-			formations = formations.data, formationUnitData = formations.unitData
+			formations = formationDataArray,
+			formationEntities = formationEntities,
+			formationsUnitDataLookup = formationsUnitDataLookup
 		};
-		
+		var clearJobHandle = clearUnitDataJob.Schedule(Dependency);
+
+		// 第二步：填充单位数据
 		var fillUnitJob = new FillUnitDataJob
-		{ 
-			formationUnitData = formationsUnitDataFromEntity, transforms = minions.transforms, 
-			indicesInFormation = minions.indicesInFormation, minionEntities = minions.entities, 
-			length = minions.Length
+		{
+			formationsUnitDataLookup = formationsUnitDataLookup,
+			transforms = minionTransformsArray,
+			indicesInFormation = minionIndicesArray,
+			minionEntities = minionEntitiesArray
 		};
-		
+		var fillJobHandle = fillUnitJob.Schedule(clearJobHandle);
+
+		// 第三步：重新排列单位索引
 		var rearrangeJob = new RearrangeUnitIndexesJob
 		{
-			formations = formations.data, formationUnitData = formations.unitData, indicesInFormation = indicesInFormation
+			formations = formationDataArray,
+			formationEntities = formationEntities,
+			formationsUnitDataLookup = formationsUnitDataLookup,
+			indicesInFormation = indicesInFormationLookup
 		};
+		var rearrangeJobHandle = rearrangeJob.Schedule(fillJobHandle);
+		rearrangeJobHandle.Complete();
 
-		var cleanFence = cleanUnitsJob.Schedule(formations.Length, SimulationState.SmallBatchSize, inputDeps);
-		var fillFence = fillUnitJob.Schedule(cleanFence);
-		var rearrangeFence = rearrangeJob.Schedule(formations.Length, SimulationState.SmallBatchSize, fillFence);
+		// 清理临时分配的数组
+		formationDataArray.Dispose();
+		formationEntities.Dispose();
+		minionTransformsArray.Dispose();
+		minionIndicesArray.Dispose();
+		minionEntitiesArray.Dispose();
 
-		return rearrangeFence;
+		Dependency = rearrangeJobHandle;
 	}
 
-	[ComputeJobOptimization]
-	private struct ClearUnitDataJob : IJobParallelFor
+	[BurstCompile]
+	private struct ClearUnitDataJob : IJob
 	{
 		[ReadOnly]
-		public ComponentDataArray<FormationData> formations;
-		public FixedArrayArray<EntityRef> formationUnitData;
-
-		public void Execute(int index)
-		{
-			var unitData = formationUnitData[index];
-			var len = math.max(formations[index].SpawnedCount, formations[index].UnitCount);
-
-			for (var i = 0; i < len; i++)
-			{
-				unitData[i] = new EntityRef();
-			}
-		}
-	}
-
-	[ComputeJobOptimization]
-	private struct FillUnitDataJob : IJob // this can't be parallel job because of FromEntity does not support parallel writing
-	{
-		public FixedArrayFromEntity<EntityRef> formationUnitData;
+		public NativeArray<FormationData> formations;
 		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-		[ReadOnly]
-		public ComponentDataArray<IndexInFormationData> indicesInFormation;
-		[ReadOnly]
-		public EntityArray minionEntities;
-
-		public int length;
+		public NativeArray<Entity> formationEntities;
+		public BufferLookup<EntityRef> formationsUnitDataLookup;
 
 		public void Execute()
 		{
-			for (var index = 0; index < length; ++index)
-			{
-				var unitData = formationUnitData[transforms[index].FormationEntity];
+			for (int index = 0; index < formationEntities.Length; index++) {
+				var formationEntity = formationEntities[index];
+				var buffer = formationsUnitDataLookup[formationEntity];
+				var len = math.max(formations[index].SpawnedCount, formations[index].UnitCount);
 
-				unitData[indicesInFormation[index].IndexInFormation] = new EntityRef(minionEntities[index]);
+				for (var i = 0; i < len; i++)
+				{
+					if (i < buffer.Length)
+					{
+						buffer[i] = new EntityRef();
+					}
+				}
 			}
 		}
 	}
 
-	[ComputeJobOptimization]
-	private struct RearrangeUnitIndexesJob : IJobParallelFor
+	[BurstCompile]
+	private struct FillUnitDataJob : IJob // 这不能是并行作业，因为BufferLookup不支持并行写入
+	{
+		public BufferLookup<EntityRef> formationsUnitDataLookup;
+		[ReadOnly]
+		public NativeArray<UnitTransformData> transforms;
+		[ReadOnly]
+		public NativeArray<IndexInFormationData> indicesInFormation;
+		[ReadOnly]
+		public NativeArray<Entity> minionEntities;
+
+		public void Execute()
+		{
+			for (var index = 0; index < minionEntities.Length; ++index)
+			{
+				var formationEntity = transforms[index].FormationEntity;
+				if (!formationsUnitDataLookup.HasBuffer(formationEntity)) continue;
+
+				var buffer = formationsUnitDataLookup[formationEntity];
+				var indexInFormation = indicesInFormation[index].IndexInFormation;
+				
+				if (indexInFormation < buffer.Length)
+				{
+					buffer[indexInFormation] = new EntityRef(minionEntities[index]);
+				}
+			}
+		}
+	}
+
+	[BurstCompile]
+	private struct RearrangeUnitIndexesJob : IJob
 	{
 		[ReadOnly]
-		public ComponentDataArray<FormationData> formations;
-		public FixedArrayArray<EntityRef> formationUnitData;
+		public NativeArray<FormationData> formations;
+		[ReadOnly]
+		public NativeArray<Entity> formationEntities;
+		public BufferLookup<EntityRef> formationsUnitDataLookup;
 
-		[NativeDisableParallelForRestriction]
-		public ComponentDataFromEntity<IndexInFormationData> indicesInFormation;
+		public ComponentLookup<IndexInFormationData> indicesInFormation;
 
-		public void Execute(int index)
+		public void Execute()
 		{
-			var len = math.max(formations[index].SpawnedCount, formations[index].UnitCount);
-
-			var unitData = formationUnitData[index];
-
-			for (var i = 0; i < len; i++)
+			// 创建一个临时字典来存储需要更新的实体和它们的新索引
+			var entitiesToUpdate = new NativeHashMap<Entity, int>(1024, Allocator.Temp);
+			
+			for (int index = 0; index < formationEntities.Length; index++)
 			{
-				if (unitData[i].entity != new Entity()) continue;
-				
-				// Find a suitable index
-				int j;
-				for (j = i + 1; j < len; j++)
+				var formationEntity = formationEntities[index];
+				if (!formationsUnitDataLookup.HasBuffer(formationEntity)) continue;
+
+				var buffer = formationsUnitDataLookup[formationEntity];
+				var len = math.max(formations[index].SpawnedCount, formations[index].UnitCount);
+				len = math.min(len, buffer.Length);
+
+				for (var i = 0; i < len; i++)
 				{
-					if (unitData[j].entity == new Entity()) continue;
+					if (buffer[i].entity != Entity.Null) continue;
 					
-					// We got an index. Replace
-					unitData[i] = unitData[j];
-					var t = indicesInFormation[unitData[j].entity];
-					t.IndexInFormation = i;
-					indicesInFormation[unitData[j].entity] = t;
+					// 寻找合适的索引
+					int j;
+					for (j = i + 1; j < len; j++)
+					{
+						if (buffer[j].entity == Entity.Null) continue;
+						
+						// 找到了索引，进行替换
+						buffer[i] = buffer[j];
+						buffer[j] = new EntityRef();
+						
+						// 将需要更新的实体和新索引添加到字典中
+						if (indicesInFormation.HasComponent(buffer[i].entity))
+						{
+							entitiesToUpdate.TryAdd(buffer[i].entity, i);
+						}
 
-					break;
+						break;
+					}
+
+					// 到末尾都没有可用的索引
+					if (j == len) break;
 				}
-
-				// No available indexes till the end
-				if (j == len) break;
 			}
+			
+			// 在所有缓冲区更新完成后，更新实体的索引
+			var enumerator = entitiesToUpdate.GetEnumerator();
+			while (enumerator.MoveNext())
+			{
+				var entity = enumerator.Current.Key;
+				var newIndex = enumerator.Current.Value;
+				
+				var indexData = indicesInFormation[entity];
+				indexData.IndexInFormation = newIndex;
+				indicesInFormation[entity] = indexData;
+			}
+			
+			// 释放临时字典
+			entitiesToUpdate.Dispose();
 		}
 	}
 }

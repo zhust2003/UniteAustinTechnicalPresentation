@@ -30,7 +30,7 @@ public struct AnimationName
 }
 
 [UpdateAfter(typeof(CrowdAgentsToTransformSystem))]
-public class TextureAnimatorSystem : JobComponentSystem
+public partial class TextureAnimatorSystem : SystemBase
 {
 	private const int NumberOfAnimations = 25;
 
@@ -68,75 +68,67 @@ public class TextureAnimatorSystem : JobComponentSystem
 		public int TextureWidth;
 
 		public float AnimationLength;
-		public bool1 Looping;
+		public bool Looping;
 	}
 
 	#region Per unit type tuples
 
-	public struct AllUnits
+	public struct Units
 	{
-		public ComponentDataArray<TextureAnimatorData> animationData;
-		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-
+		public NativeArray<TextureAnimatorData> animationData;
+		public NativeArray<UnitTransformData> transforms;
 		public int Length;
-
 	}
 
 	public struct MeleeUnits
 	{
-		[ReadOnly]
-		public ComponentDataArray<MeleeUnitData> meleeUnitFilter;
-		public ComponentDataArray<TextureAnimatorData> animationData;
-		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-
+		public NativeArray<TextureAnimatorData> animationData;
+		public NativeArray<UnitTransformData> transforms;
 		public int Length;
 	}
 
 	public struct TankUnits
 	{
-		[ReadOnly]
-		public ComponentDataArray<TankUnitData> tankUnitFilter;
-		public ComponentDataArray<TextureAnimatorData> animationData;
-		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-
+		public NativeArray<TextureAnimatorData> animationData;
+		public NativeArray<UnitTransformData> transforms;
 		public int Length;
 	}
 
-
 	public struct RangedUnits
 	{
-		[ReadOnly]
-		public ComponentDataArray<RangedUnitData> rangedUnitsSelector;
-		public ComponentDataArray<TextureAnimatorData> animationData;
-		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-
+		public NativeArray<TextureAnimatorData> animationData;
+		public NativeArray<UnitTransformData> transforms;
 		public int Length;
 	}
 
 	public struct SkeletonUnits
 	{
-		public ComponentDataArray<SkeletonUnitData> skeletonUnitsSelector;
-		public ComponentDataArray<TextureAnimatorData> animationData;
-		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> transforms;
-
+		public NativeArray<TextureAnimatorData> animationData;
+		public NativeArray<UnitTransformData> transforms;
 		public int Length;
 	}
 
-	[Inject]
-	private AllUnits units;
+	private EntityQuery allUnitsQuery;
+	private EntityQuery meleeUnitsQuery;
+	private EntityQuery tankUnitsQuery;
+	private EntityQuery rangedUnitsQuery;
+	private EntityQuery skeletonUnitsQuery;
 
-	[Inject]
+	private NativeArray<TextureAnimatorData> allUnitsBuffer;
+	private NativeArray<UnitTransformData> allTransformsBuffer;
+	private NativeArray<TextureAnimatorData> meleeUnitsBuffer;
+	private NativeArray<UnitTransformData> meleeTransformsBuffer;
+	private NativeArray<TextureAnimatorData> tankUnitsBuffer;
+	private NativeArray<UnitTransformData> tankTransformsBuffer;
+	private NativeArray<TextureAnimatorData> rangedUnitsBuffer;
+	private NativeArray<UnitTransformData> rangedTransformsBuffer;
+	private NativeArray<TextureAnimatorData> skeletonUnitsBuffer;
+	private NativeArray<UnitTransformData> skeletonTransformsBuffer;
+
+	private Units units;
 	private MeleeUnits meleeUnits;
-	[Inject]
 	private TankUnits tankUnits;
-	[Inject]
 	private RangedUnits rangedUnits;
-	[Inject]
 	private SkeletonUnits skeletonUnits;
 
 	#endregion
@@ -151,11 +143,9 @@ public class TextureAnimatorSystem : JobComponentSystem
 	public bool initialized = false;
 
 	#region Jobs
-
-	[ComputeJobOptimization]
 	struct PrepareAnimatorDataJob : IJobParallelFor
 	{
-		public ComponentDataArray<TextureAnimatorData> textureAnimatorData;
+		public NativeArray<TextureAnimatorData> textureAnimatorData;
 
 		[NativeFixedLength(100)]
 		[ReadOnly]
@@ -165,7 +155,6 @@ public class TextureAnimatorSystem : JobComponentSystem
 
 		public void Execute(int i)
 		{
-			// CHECK: We can't modify values inside of a struct directly?
 			var animatorData = textureAnimatorData[i];
 
 			if (animatorData.CurrentAnimationId != animatorData.NewAnimationId)
@@ -183,7 +172,6 @@ public class TextureAnimatorSystem : JobComponentSystem
 			}
 
 			animatorData.AnimationNormalizedTime = normalizedTime;
-
 			textureAnimatorData[i] = animatorData;
 		}
 	}
@@ -193,10 +181,10 @@ public class TextureAnimatorSystem : JobComponentSystem
 	struct CullAndComputeParameters : IJobParallelFor
 	{
 		[ReadOnly]
-		public ComponentDataArray<TextureAnimatorData> textureAnimatorData;
+		public NativeArray<TextureAnimatorData> textureAnimatorData;
 
 		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> unitTransformData;
+		public NativeArray<UnitTransformData> unitTransformData;
 
 		[NativeFixedLength(100)]
 		[ReadOnly]
@@ -301,14 +289,13 @@ public class TextureAnimatorSystem : JobComponentSystem
 #endif
 
 #if USE_SAFE_JOBS
-	[ComputeJobOptimization]
 	struct CullAndComputeParametersSafe : IJob
 	{
 		[ReadOnly]
-		public ComponentDataArray<TextureAnimatorData> textureAnimatorData;
+		public NativeArray<TextureAnimatorData> textureAnimatorData;
 
 		[ReadOnly]
-		public ComponentDataArray<UnitTransformData> unitTransformData;
+		public NativeArray<UnitTransformData> unitTransformData;
 
 		[NativeFixedLength(100)]
 		[ReadOnly]
@@ -400,107 +387,40 @@ public class TextureAnimatorSystem : JobComponentSystem
 
 	#endregion
 
-	protected override void OnCreateManager(int capacity)
+	protected override void OnCreate()
 	{
-		base.OnCreateManager(capacity);
-
-		// CHECK: Calling Initialize here causes a 100% reproducable crash on play
-		//Initialize();
+		// 设置EntityQuery
+		allUnitsQuery = GetEntityQuery(
+			ComponentType.ReadWrite<TextureAnimatorData>(),
+			ComponentType.ReadOnly<UnitTransformData>()
+		);
+		
+		meleeUnitsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<MeleeUnitData>(),
+			ComponentType.ReadWrite<TextureAnimatorData>(),
+			ComponentType.ReadOnly<UnitTransformData>()
+		);
+		
+		tankUnitsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<TankUnitData>(),
+			ComponentType.ReadWrite<TextureAnimatorData>(),
+			ComponentType.ReadOnly<UnitTransformData>()
+		);
+		
+		rangedUnitsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<RangedUnitData>(),
+			ComponentType.ReadWrite<TextureAnimatorData>(),
+			ComponentType.ReadOnly<UnitTransformData>()
+		);
+		
+		skeletonUnitsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<SkeletonUnitData>(),
+			ComponentType.ReadWrite<TextureAnimatorData>(),
+			ComponentType.ReadOnly<UnitTransformData>()
+		);
 	}
 
-	private void Initialize()
-	{
-		if (initialized) return;
-
-		animationClipData = new NativeArray<AnimationClipDataBaked>(100, Allocator.Persistent);
-
-		perUnitTypeDataHolder = new Dictionary<UnitType, DataPerUnitType>();
-		InstantiatePerUnitTypeData(UnitType.Melee);
-		InstantiatePerUnitTypeData(UnitType.Skeleton);
-
-		initialized = true;
-	}
-
-	private void InstantiatePerUnitTypeData(UnitType type)
-	{
-		var minionPrefab = Spawner.GetMinionPrefab(type);
-		var renderingData = minionPrefab.GetComponentInChildren<RenderingDataWrapper>().Value;
-		var bakingObject = GameObject.Instantiate(renderingData.BakingPrefab);
-		SkinnedMeshRenderer renderer = bakingObject.GetComponentInChildren<SkinnedMeshRenderer>();
-		Material material = renderingData.Material;
-		LodData lodData = renderingData.LodData;
-
-		var dataPerUnitType = new DataPerUnitType
-		{
-			UnitType = type,
-			BakedData = KeyframeTextureBaker.BakeClips(renderer,
-														GetAllAnimationClips(renderer.GetComponentInParent<Animation>()), lodData),
-			Material = material,
-		};
-		dataPerUnitType.Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.NewMesh);
-		dataPerUnitType.Lod1Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.lods.Lod1Mesh);
-		dataPerUnitType.Lod2Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.lods.Lod2Mesh);
-		dataPerUnitType.Lod3Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.lods.Lod3Mesh);
-
-#if !USE_SAFE_JOBS
-		dataPerUnitType.BufferPointers = new NativeArray<IntPtr>(12, Allocator.Persistent);
-		dataPerUnitType.BufferPointers[0] = dataPerUnitType.Drawer.BufferPointers[0];
-		dataPerUnitType.BufferPointers[1] = dataPerUnitType.Drawer.BufferPointers[1];
-		dataPerUnitType.BufferPointers[2] = dataPerUnitType.Drawer.BufferPointers[2];
-		dataPerUnitType.BufferPointers[3] = dataPerUnitType.Lod1Drawer.BufferPointers[0];
-		dataPerUnitType.BufferPointers[4] = dataPerUnitType.Lod1Drawer.BufferPointers[1];
-		dataPerUnitType.BufferPointers[5] = dataPerUnitType.Lod1Drawer.BufferPointers[2];
-		dataPerUnitType.BufferPointers[6] = dataPerUnitType.Lod2Drawer.BufferPointers[0];
-		dataPerUnitType.BufferPointers[7] = dataPerUnitType.Lod2Drawer.BufferPointers[1];
-		dataPerUnitType.BufferPointers[8] = dataPerUnitType.Lod2Drawer.BufferPointers[2];
-		dataPerUnitType.BufferPointers[9] = dataPerUnitType.Lod3Drawer.BufferPointers[0];
-		dataPerUnitType.BufferPointers[10] = dataPerUnitType.Lod3Drawer.BufferPointers[1];
-		dataPerUnitType.BufferPointers[11] = dataPerUnitType.Lod3Drawer.BufferPointers[2];
-#endif
-
-		perUnitTypeDataHolder.Add(type, dataPerUnitType);
-		TransferAnimationData(type);
-		GameObject.Destroy(bakingObject);
-	}
-
-	private void TransferAnimationData(UnitType type)
-	{
-		var bakedData = perUnitTypeDataHolder[type].BakedData;
-		for (int i = 0; i < bakedData.Animations.Count; i++)
-		{
-			AnimationClipDataBaked data = new AnimationClipDataBaked();
-			data.AnimationLength = bakedData.Animations[i].Clip.length;
-			GetTextureRangeAndOffset(bakedData, bakedData.Animations[i], out data.TextureRange, out data.TextureOffset, out data.OnePixelOffset, out data.TextureWidth);
-			data.Looping = bakedData.Animations[i].Clip.wrapMode == WrapMode.Loop;
-			animationClipData[(int)type * 25 + i] = data;
-		}
-	}
-
-	private AnimationClip[] GetAllAnimationClips(Animation animation)
-	{
-		List<AnimationClip> animationClips = new List<AnimationClip>();
-		foreach (AnimationState state in animation)
-		{
-			animationClips.Add(state.clip);
-		}
-
-		animationClips.Sort((x, y) => String.Compare(x.name, y.name, StringComparison.Ordinal));
-
-		return animationClips.ToArray();
-	}
-
-	private void GetTextureRangeAndOffset(KeyframeTextureBaker.BakedData bakedData, KeyframeTextureBaker.AnimationClipData clipData, out float range, out float offset, out float onePixelOffset, out int textureWidth)
-	{
-		float onePixel = 1f / bakedData.Texture0.width;
-		float start = (float)clipData.PixelStart / bakedData.Texture0.width + onePixel * 0.5f;
-		float end = (float)clipData.PixelEnd / bakedData.Texture0.width + onePixel * 0.5f;
-		onePixelOffset = onePixel;
-		textureWidth = bakedData.Texture0.width;
-		range = end - start;
-		offset = start;
-	}
-
-	protected override void OnDestroyManager()
+	protected override void OnDestroy()
 	{
 		previousFrameFence.Complete();
 		if (perUnitTypeDataHolder != null)
@@ -509,33 +429,34 @@ public class TextureAnimatorSystem : JobComponentSystem
 		}
 
 		if (animationClipData.IsCreated) animationClipData.Dispose();
-		base.OnDestroyManager();
+		DisposeBuffers();
 	}
 
-	public int lod0Count,
-				lod1Count,
-				lod2Count,
-				lod3Count;
+	private void DisposeBuffers()
+	{
+		if (allUnitsBuffer.IsCreated) allUnitsBuffer.Dispose();
+		if (allTransformsBuffer.IsCreated) allTransformsBuffer.Dispose();
+		if (meleeUnitsBuffer.IsCreated) meleeUnitsBuffer.Dispose();
+		if (meleeTransformsBuffer.IsCreated) meleeTransformsBuffer.Dispose();
+		if (skeletonUnitsBuffer.IsCreated) skeletonUnitsBuffer.Dispose();
+		if (skeletonTransformsBuffer.IsCreated) skeletonTransformsBuffer.Dispose();
+	}
 
-
-
-	private JobHandle previousFrameFence;
-
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnUpdate()
 	{
 		Initialize();
 
-		if (!initialized) return inputDeps;
+		if (!initialized) return;
 
 		if (SimulationSettings.Instance.DisableRendering)
-			return inputDeps;
+			return;
 
-		float dt = Time.deltaTime;
+		float dt = SystemAPI.Time.DeltaTime;
 
 		if (perUnitTypeDataHolder != null)
 		{
 			previousFrameFence.Complete();
-			previousFrameFence = inputDeps;
+			previousFrameFence = Dependency;
 
 			lod0Count = lod1Count = lod2Count = lod3Count = 0;
 
@@ -553,14 +474,17 @@ public class TextureAnimatorSystem : JobComponentSystem
 				data.Value.Count = lod0Count + lod1Count + lod2Count + lod3Count;
 			}
 
+			// 更新缓冲区
+			UpdateBuffers();
+
 			var prepareAnimatorJob = new PrepareAnimatorDataJob()
 			{
 				animationClips = animationClipData,
 				dt = dt,
-				textureAnimatorData = units.animationData,
+				textureAnimatorData = allUnitsBuffer
 			};
 
-			var prepareAnimatorFence = prepareAnimatorJob.Schedule(units.Length, SimulationState.BigBatchSize, previousFrameFence);
+			var prepareAnimatorFence = prepareAnimatorJob.Schedule(allUnitsBuffer.Length, SimulationState.BigBatchSize, Dependency);
 
 			NativeArray<JobHandle> jobHandles = new NativeArray<JobHandle>(4, Allocator.Temp);
 			jobHandles[0] = prepareAnimatorFence;
@@ -570,27 +494,46 @@ public class TextureAnimatorSystem : JobComponentSystem
 				switch (data.Key)
 				{
 					case UnitType.Melee:
-						ComputeFences(meleeUnits.animationData, dt, meleeUnits.transforms, data, prepareAnimatorFence, jobHandles, 0);
-						data.Value.Count = meleeUnits.Length;
+						ComputeFences(meleeUnitsBuffer, dt, meleeTransformsBuffer, data, prepareAnimatorFence, jobHandles, 0);
+						data.Value.Count = meleeUnitsBuffer.Length;
 						break;
 					case UnitType.Skeleton:
-						ComputeFences(skeletonUnits.animationData, dt, skeletonUnits.transforms, data, prepareAnimatorFence, jobHandles, 3);
-						data.Value.Count = skeletonUnits.Length;
+						ComputeFences(skeletonUnitsBuffer, dt, skeletonTransformsBuffer, data, prepareAnimatorFence, jobHandles, 3);
+						data.Value.Count = skeletonUnitsBuffer.Length;
 						break;
 				}
 			}
 
 			Profiler.BeginSample("Combine all dependencies");
-			previousFrameFence = JobHandle.CombineDependencies(jobHandles);
+			Dependency = JobHandle.CombineDependencies(jobHandles);
 			Profiler.EndSample();
 
 			jobHandles.Dispose();
-			return previousFrameFence;
 		}
-		return inputDeps;
 	}
 
-	private void ComputeFences(ComponentDataArray<TextureAnimatorData> textureAnimatorDataForUnitType, float dt, ComponentDataArray<UnitTransformData> unitTransformDataForUnitType, KeyValuePair<UnitType, DataPerUnitType> data, JobHandle previousFence, NativeArray<JobHandle> jobHandles, int i)
+	private void UpdateBuffers()
+	{
+		// 更新所有单位的缓冲区
+		if (allUnitsBuffer.IsCreated) allUnitsBuffer.Dispose();
+		if (allTransformsBuffer.IsCreated) allTransformsBuffer.Dispose();
+		allUnitsBuffer = allUnitsQuery.ToComponentDataArray<TextureAnimatorData>(Allocator.TempJob);
+		allTransformsBuffer = allUnitsQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+
+		// 更新近战单位的缓冲区
+		if (meleeUnitsBuffer.IsCreated) meleeUnitsBuffer.Dispose();
+		if (meleeTransformsBuffer.IsCreated) meleeTransformsBuffer.Dispose();
+		meleeUnitsBuffer = meleeUnitsQuery.ToComponentDataArray<TextureAnimatorData>(Allocator.TempJob);
+		meleeTransformsBuffer = meleeUnitsQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+
+		// 更新骷髅单位的缓冲区
+		if (skeletonUnitsBuffer.IsCreated) skeletonUnitsBuffer.Dispose();
+		if (skeletonTransformsBuffer.IsCreated) skeletonTransformsBuffer.Dispose();
+		skeletonUnitsBuffer = skeletonUnitsQuery.ToComponentDataArray<TextureAnimatorData>(Allocator.TempJob);
+		skeletonTransformsBuffer = skeletonUnitsQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+	}
+
+	private void ComputeFences(NativeArray<TextureAnimatorData> textureAnimatorDataForUnitType, float dt, NativeArray<UnitTransformData> unitTransformDataForUnitType, KeyValuePair<UnitType, DataPerUnitType> data, JobHandle previousFence, NativeArray<JobHandle> jobHandles, int i)
 	{
 		Profiler.BeginSample("Scheduling");
 		// TODO: Replace this with more efficient search.
@@ -684,6 +627,107 @@ public class TextureAnimatorSystem : JobComponentSystem
 		Profiler.EndSample();
 #endif
 	}
+
+	private void Initialize()
+	{
+		if (initialized) return;
+
+		animationClipData = new NativeArray<AnimationClipDataBaked>(100, Allocator.Persistent);
+
+		perUnitTypeDataHolder = new Dictionary<UnitType, DataPerUnitType>();
+		InstantiatePerUnitTypeData(UnitType.Melee);
+		InstantiatePerUnitTypeData(UnitType.Skeleton);
+
+		initialized = true;
+	}
+
+	private void InstantiatePerUnitTypeData(UnitType type)
+	{
+		var minionPrefab = Spawner.GetMinionPrefab(type);
+		var renderingData = minionPrefab.GetComponentInChildren<RenderingDataWrapper>();
+		var bakingObject = GameObject.Instantiate(renderingData.BakingPrefab);
+		SkinnedMeshRenderer renderer = bakingObject.GetComponentInChildren<SkinnedMeshRenderer>();
+		Material material = renderingData.Material;
+		LodData lodData = renderingData.LodData;
+
+		var dataPerUnitType = new DataPerUnitType
+		{
+			UnitType = type,
+			BakedData = KeyframeTextureBaker.BakeClips(renderer,
+														GetAllAnimationClips(renderer.GetComponentInParent<Animation>()), lodData),
+			Material = material,
+		};
+		dataPerUnitType.Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.NewMesh);
+		dataPerUnitType.Lod1Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.lods.Lod1Mesh);
+		dataPerUnitType.Lod2Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.lods.Lod2Mesh);
+		dataPerUnitType.Lod3Drawer = new InstancedSkinningDrawer(dataPerUnitType, dataPerUnitType.BakedData.lods.Lod3Mesh);
+
+#if !USE_SAFE_JOBS
+		dataPerUnitType.BufferPointers = new NativeArray<IntPtr>(12, Allocator.Persistent);
+		dataPerUnitType.BufferPointers[0] = dataPerUnitType.Drawer.BufferPointers[0];
+		dataPerUnitType.BufferPointers[1] = dataPerUnitType.Drawer.BufferPointers[1];
+		dataPerUnitType.BufferPointers[2] = dataPerUnitType.Drawer.BufferPointers[2];
+		dataPerUnitType.BufferPointers[3] = dataPerUnitType.Lod1Drawer.BufferPointers[0];
+		dataPerUnitType.BufferPointers[4] = dataPerUnitType.Lod1Drawer.BufferPointers[1];
+		dataPerUnitType.BufferPointers[5] = dataPerUnitType.Lod1Drawer.BufferPointers[2];
+		dataPerUnitType.BufferPointers[6] = dataPerUnitType.Lod2Drawer.BufferPointers[0];
+		dataPerUnitType.BufferPointers[7] = dataPerUnitType.Lod2Drawer.BufferPointers[1];
+		dataPerUnitType.BufferPointers[8] = dataPerUnitType.Lod2Drawer.BufferPointers[2];
+		dataPerUnitType.BufferPointers[9] = dataPerUnitType.Lod3Drawer.BufferPointers[0];
+		dataPerUnitType.BufferPointers[10] = dataPerUnitType.Lod3Drawer.BufferPointers[1];
+		dataPerUnitType.BufferPointers[11] = dataPerUnitType.Lod3Drawer.BufferPointers[2];
+#endif
+
+		perUnitTypeDataHolder.Add(type, dataPerUnitType);
+		TransferAnimationData(type);
+		GameObject.Destroy(bakingObject);
+	}
+
+	private void TransferAnimationData(UnitType type)
+	{
+		var bakedData = perUnitTypeDataHolder[type].BakedData;
+		for (int i = 0; i < bakedData.Animations.Count; i++)
+		{
+			AnimationClipDataBaked data = new AnimationClipDataBaked();
+			data.AnimationLength = bakedData.Animations[i].Clip.length;
+			GetTextureRangeAndOffset(bakedData, bakedData.Animations[i], out data.TextureRange, out data.TextureOffset, out data.OnePixelOffset, out data.TextureWidth);
+			data.Looping = bakedData.Animations[i].Clip.wrapMode == WrapMode.Loop;
+			animationClipData[(int)type * 25 + i] = data;
+		}
+	}
+
+	private AnimationClip[] GetAllAnimationClips(Animation animation)
+	{
+		List<AnimationClip> animationClips = new List<AnimationClip>();
+		foreach (AnimationState state in animation)
+		{
+			animationClips.Add(state.clip);
+		}
+
+		animationClips.Sort((x, y) => String.Compare(x.name, y.name, StringComparison.Ordinal));
+
+		return animationClips.ToArray();
+	}
+
+	private void GetTextureRangeAndOffset(KeyframeTextureBaker.BakedData bakedData, KeyframeTextureBaker.AnimationClipData clipData, out float range, out float offset, out float onePixelOffset, out int textureWidth)
+	{
+		float onePixel = 1f / bakedData.Texture0.width;
+		float start = (float)clipData.PixelStart / bakedData.Texture0.width + onePixel * 0.5f;
+		float end = (float)clipData.PixelEnd / bakedData.Texture0.width + onePixel * 0.5f;
+		onePixelOffset = onePixel;
+		textureWidth = bakedData.Texture0.width;
+		range = end - start;
+		offset = start;
+	}
+
+	public int lod0Count,
+				lod1Count,
+				lod2Count,
+				lod3Count;
+
+
+
+	private JobHandle previousFrameFence;
 }
 
 #if !USE_SAFE_JOBS
@@ -890,9 +934,9 @@ public class InstancedSkinningDrawer : IDisposable
 		objectRotationsBuffer.SetData(ObjectRotations, 0, 0, count);
 		textureCoordinatesBuffer.SetData(TextureCoordinates, 0, 0, count);
 #else
-		objectPositionsBuffer.SetData((NativeArray<float4>)ObjectPositions, 0, 0, count);
-		objectRotationsBuffer.SetData((NativeArray<quaternion>)ObjectRotations, 0, 0, count);
-		textureCoordinatesBuffer.SetData((NativeArray<float3>)TextureCoordinates, 0, 0, count);
+		objectPositionsBuffer.SetData(ObjectPositions.AsArray(), 0, 0, count);
+		objectRotationsBuffer.SetData(ObjectRotations.AsArray(), 0, 0, count);
+		textureCoordinatesBuffer.SetData(TextureCoordinates.AsArray(), 0, 0, count);
 #endif
 
 		material.SetBuffer("textureCoordinatesBuffer", textureCoordinatesBuffer);

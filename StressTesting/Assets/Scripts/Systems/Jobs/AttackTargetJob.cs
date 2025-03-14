@@ -1,25 +1,26 @@
 ﻿using Unity.Collections;
 using Unity.Jobs;
 using Unity.Entities;
+using Unity.Burst;
 
-[ComputeJobOptimization]
+[BurstCompile]
 public struct AttackTargetJob : IJobParallelFor
 {
 	[ReadOnly]
-	public ComponentDataArray<MinionAttackData> minionAttacks;
+	public NativeArray<MinionAttackData> minionAttacks;
 
-	public ComponentDataArray<MinionData> minions;
-
-	[ReadOnly]
-	public EntityArray entities;
+	public NativeArray<MinionData> minions;
 
 	[ReadOnly]
-	public ComponentDataArray<UnitTransformData> minionTransforms;
+	public NativeArray<Entity> entities;
+
+	[ReadOnly]
+	public NativeArray<UnitTransformData> minionTransforms;
 
 	[ReadOnly]
 	public float dt;
 
-	public NativeQueue<AttackCommand>.Concurrent AttackCommands;
+	public NativeQueue<AttackCommand>.ParallelWriter AttackCommands;
 
 	public void Execute(int index)
 	{

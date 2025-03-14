@@ -5,7 +5,7 @@ using Unity.Entities;
 using Unity.Jobs;
 
 [UpdateAfter(typeof(UnitLifecycleManager))]
-public class FormationAudioSourceManager : JobComponentSystem
+public partial class FormationAudioSourceManager : SystemBase
 {
 	private class AudioSourceFormation
 	{
@@ -19,24 +19,9 @@ public class FormationAudioSourceManager : JobComponentSystem
 		public Entity FormationEntity;
 	}
 
-	public struct Formations
-	{
-		[ReadOnly]
-		public ComponentDataArray<FormationData> data;
-		[ReadOnly]
-		public EntityArray entities;
-
-		public int Length;
-	}
-
-	[Inject]
-	private Formations formations;
-
-	[Inject]
-	private ComponentDataFromEntity<FormationIntegrityData> formationIntegrityDataFromEntity;
-
-	[Inject]
-	private ComponentDataFromEntity<FormationData> formationDataFromEntity;
+	private EntityQuery formationsQuery;
+	private ComponentLookup<FormationIntegrityData> formationIntegrityDataLookup;
+	private ComponentLookup<FormationData> formationDataLookup;
 
 	private const int AudioSourcePoolSize = 6;
 
@@ -52,6 +37,16 @@ public class FormationAudioSourceManager : JobComponentSystem
 	private const string IntroEndedEvent = "INTRO_ENDED";
 	private const string OutroStartedEvent = "OUTRO_STARTED";
 	private const string OutroEndedEvent = "OUTRO_ENDED";
+
+	protected override void OnCreate()
+	{
+		formationsQuery = GetEntityQuery(
+			ComponentType.ReadOnly<FormationData>()
+		);
+		
+		formationIntegrityDataLookup = GetComponentLookup<FormationIntegrityData>(true);
+		formationDataLookup = GetComponentLookup<FormationData>(true);
+	}
 
 	private void EnableFormationSounds(string eventName)
 	{
@@ -70,7 +65,7 @@ public class FormationAudioSourceManager : JobComponentSystem
 		}
 	}
 
-	protected override JobHandle OnUpdate(JobHandle inputDeps)
+	protected override void OnUpdate()
 	{
 		if (!isInitialized)
 		{
@@ -80,7 +75,7 @@ public class FormationAudioSourceManager : JobComponentSystem
 			AudioSystem.SubscribeOnce(OutroEndedEvent, EnableFormationSounds);
 		}
 
-		if (!isFormationSoundEnabled || formations.Length == 0) return inputDeps;
+		if (!isFormationSoundEnabled || formationsQuery.IsEmpty) return;
 
 		if (audioSources == null)
 		{
@@ -95,19 +90,24 @@ public class FormationAudioSourceManager : JobComponentSystem
 		}
 
 		var curCamera = Camera.main;
-		if (curCamera == null) return inputDeps;
+		if (curCamera == null) return;
 		var curCameraPos = curCamera.transform.position;
 
-		// Might want to consider jobifying this instead
-		inputDeps.Complete();
+		// 更新组件查询
+		formationIntegrityDataLookup.Update(this);
+		formationDataLookup.Update(this);
+		
+		// 获取组件数据
+		var formationsArray = formationsQuery.ToComponentDataArray<FormationData>(Allocator.TempJob);
+		var entitiesArray = formationsQuery.ToEntityArray(Allocator.TempJob);
 
 		closestFormations.Clear();
-		for (var i = 0; i < formations.Length; i++)
+		for (var i = 0; i < formationsArray.Length; i++)
 		{
-			var formation = formations.data[i];
+			var formation = formationsArray[i];
 			if (formation.FormationState == FormationData.State.AllDead) continue;
 			var dist = (curCameraPos - (Vector3)formation.Position).sqrMagnitude;
-			if (dist < maxDist) closestFormations.Add(new FormationDistance() {Dist = dist, FormationEntity = formations.entities[i] });
+			if (dist < maxDist) closestFormations.Add(new FormationDistance() {Dist = dist, FormationEntity = entitiesArray[i] });
 		}
 
 		closestFormations.Sort((fd1, fd2) => (fd1.Dist < fd2.Dist) ? -1 : ((fd1.Dist > fd2.Dist) ? 1 : 0));
@@ -154,21 +154,24 @@ public class FormationAudioSourceManager : JobComponentSystem
 				doPlay = true;
 			}
 
-			if(formationDataFromEntity.Exists(found.FormationEntity))
+			if(formationDataLookup.HasComponent(found.FormationEntity) && formationIntegrityDataLookup.HasComponent(found.FormationEntity))
 			{
-				var formation =formationDataFromEntity[found.FormationEntity];
-				var formationIntegrityData = formationIntegrityDataFromEntity[found.FormationEntity];
+				var formation = formationDataLookup[found.FormationEntity];
+				var formationIntegrityData = formationIntegrityDataLookup[found.FormationEntity];
 				var percent = (float)formationIntegrityData.unitsAttacking / formation.UnitCount;
 				var isAttacking = percent > 0.1f;
 				
 				var clip = GetClipForUnitTypeAndState((UnitType)formation.UnitType, isAttacking);
 				if (found.AudioSource.clip != clip) found.AudioSource.clip = clip;
 
-				found.AudioSource.transform.position = formationDataFromEntity[formationEntity].Position;
+				found.AudioSource.transform.position = formationDataLookup[formationEntity].Position;
 				if (doPlay) found.AudioSource.Play();
 			}
 		}
-		return new JobHandle();
+		
+		// 清理临时分配的数组
+		formationsArray.Dispose();
+		entitiesArray.Dispose();
 	}
 
 	private static AudioClip GetClipForUnitTypeAndState(UnitType unitType, bool isAttacking)

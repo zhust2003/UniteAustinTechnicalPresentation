@@ -12,7 +12,7 @@ public class TextureAnimatorSystemGui : MonoBehaviour
 
 	public void OnGUI()
 	{
-		if (textureAnimatorSystem == null) textureAnimatorSystem = World.Active.GetExistingManager<TextureAnimatorSystem>();
+		if (textureAnimatorSystem == null) textureAnimatorSystem = World.DefaultGameObjectInjectionWorld.GetExistingSystemManaged<TextureAnimatorSystem>();
 
 		int totalUnits = textureAnimatorSystem.lod0Count + textureAnimatorSystem.lod1Count + textureAnimatorSystem.lod2Count + textureAnimatorSystem.lod3Count;
 		var oldSize = GUI.skin.label.fontSize;

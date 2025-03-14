@@ -4,28 +4,29 @@ using Unity.Mathematics;
 using UnityEngine;
 using Unity.Entities;
 using UnityEngine.Experimental.AI;
+using Unity.Burst;
 
-[ComputeJobOptimization]
+[BurstCompile]
 public struct MinionBehaviourJob : IJobParallelForBatch
 {
 	[ReadOnly]
-	public ComponentDataArray<MinionTarget> targetPositions;
+	public NativeArray<MinionTarget> targetPositions;
 	[ReadOnly]
-	public ComponentDataArray<RigidbodyData> rigidbodyData;
+	public NativeArray<RigidbodyData> rigidbodyData;
 	[ReadOnly]
-	public ComponentDataArray<MinionAttackData> minionAttackData;
+	public NativeArray<MinionAttackData> minionAttackData;
 	[ReadOnly]
-	public ComponentDataArray<MinionData> minionData;
+	public NativeArray<MinionData> minionData;
 	[ReadOnly]
 	public float archerAttackTime;
 
-	public ComponentDataArray<TextureAnimatorData> animatorData;
+	public NativeArray<TextureAnimatorData> animatorData;
 
 	[ReadOnly]
-	public ComponentDataArray<UnitTransformData> transforms;
+	public NativeArray<UnitTransformData> transforms;
 
 	[ReadOnly]
-	public ComponentDataArray<NavMeshLocationComponent> navMeshLocations;
+	public NativeArray<NavMeshLocationComponent> navMeshLocations;
 
 	public NativeArray<Vector3> forwardsBuffer;
 	public NativeArray<Vector3> positionsBuffer;
@@ -109,11 +110,11 @@ public struct MinionBehaviourJob : IJobParallelForBatch
 				}
 				if (2 != animation.UnitType)
 				{
-					animation.AnimationNormalizedTime = minionData [index].attackCycle / MinionData.AttackTime;
+					animation.AnimationNormalizedTime = minionData[index].attackCycle / MinionData.AttackTime;
 				}
 				else
 				{
-					animation.AnimationNormalizedTime = minionData [index].attackCycle / archerAttackTime;
+					animation.AnimationNormalizedTime = minionData[index].attackCycle / archerAttackTime;
 				}
 			}
 
