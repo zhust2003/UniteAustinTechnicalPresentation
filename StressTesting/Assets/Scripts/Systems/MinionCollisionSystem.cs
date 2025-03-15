@@ -61,26 +61,26 @@ public partial class MinionCollisionSystem : SystemBase
 		var prepareCollision = new PrepareMinionCollisionJob
 		{
 			entities = entitiesArray,
-			entitiesArray = m_Entities.AsArray(),
+			entitiesArray = m_Entities.AsDeferredJobArray(),
 			
 			transforms = transformsArray,
-			transformsArray = m_Transforms.AsArray(),
+			transformsArray = m_Transforms.AsDeferredJobArray(),
 			
 			minionBitmask = bitmaskArray,
-			minionBitmaskArray = m_Bitmasks.AsArray()
+			minionBitmaskArray = m_Bitmasks.AsDeferredJobArray()
 		};
 		var prepareJobHandle = prepareCollision.Schedule(minionCount, 128, Dependency);
 		
 		// 获取碰撞桶
 		var collisionForceJob = new MinionCollisionJob
 		{
-			transforms = m_Transforms.AsArray(),
+			transforms = m_Transforms.AsDeferredJobArray(),
 			buckets = minionSystem.CollisionBuckets,
 			minionVelocities = velocitiesArray,
 			dt = SystemAPI.Time.DeltaTime,
-			minionBitmask = m_Bitmasks.AsArray(),
+			minionBitmask = m_Bitmasks.AsDeferredJobArray(),
 			minionAttackData = attackDataArray,
-			entities = m_Entities.AsArray()
+			entities = m_Entities.AsDeferredJobArray()
 		};
 
 		var collisionJobHandle = collisionForceJob.Schedule(minionCount, SimulationState.BigBatchSize, prepareJobHandle);

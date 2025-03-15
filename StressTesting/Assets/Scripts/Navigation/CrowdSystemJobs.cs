@@ -395,12 +395,13 @@ public partial class CrowdSystem
         public PathQueryQueueEcs queryQueue;
         public NativeArray<PolygonId> paths;
         public NativeArray<CrowdAgentNavigator> agentNavigators;
+        public int pathsStride; // 每个代理的路径长度
 
         public void Execute()
         {
             if (queryQueue.GetResultPathsCount() > 0)
             {
-                queryQueue.CopyResultsTo(ref paths, ref agentNavigators);
+                queryQueue.CopyResultsTo(ref paths, ref agentNavigators, pathsStride);
                 queryQueue.ClearResults();
             }
         }

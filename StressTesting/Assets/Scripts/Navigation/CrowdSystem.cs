@@ -10,7 +10,7 @@ using Unity.Burst;
 public partial class CrowdSystem : SystemBase
 {
 #if DEBUG_CROWDSYSTEM
-    public bool drawDebug = false;
+    public bool drawDebug = true;
     public bool dbgPrintAgentCount = false;
     public bool dbgPrintRequests = false;
     public bool dbgCheckRequests = false;
@@ -297,9 +297,9 @@ public partial class CrowdSystem : SystemBase
             query = m_NavMeshQuery,
             agents = agentArray,
             agentNavigators = agentNavigatorArray,
-            planPathForAgent = m_EmptyPlanPathForAgent,
-            pathRequestIdForAgent = m_PathRequestIdForAgent,
-            pathRequests = m_PathRequests,
+            planPathForAgent = m_EmptyPlanPathForAgent.AsDeferredJobArray(),
+            pathRequestIdForAgent = m_PathRequestIdForAgent.AsDeferredJobArray(),
+            pathRequests = m_PathRequests.AsDeferredJobArray(),
             pathRequestsRange = m_PathRequestsRange,
             currentAgentIndex = m_CurrentAgentIndex,
             uniqueIdStore = m_UniqueIdStore
@@ -315,7 +315,7 @@ public partial class CrowdSystem : SystemBase
             {
                 var enqueuingJob = new EnqueueRequestsInQueriesJob
                 {
-                    pathRequests = m_PathRequests,
+                    pathRequests = m_PathRequests.AsDeferredJobArray(),
                     pathRequestsRange = m_PathRequestsRange,
                     maxRequestsInQueue = requestsPerQueue,
                     queryQueue = queue
@@ -327,7 +327,7 @@ public partial class CrowdSystem : SystemBase
 
         var forgetMovedRequestsJob = new ForgetMovedRequestsJob
         {
-            pathRequests = m_PathRequests,
+            pathRequests = m_PathRequests.AsDeferredJobArray(),
             pathRequestsRange = m_PathRequestsRange
         };
         m_AfterMovedRequestsForgotten = forgetMovedRequestsJob.Schedule(afterRequestsMovedToQueries);
@@ -345,21 +345,23 @@ public partial class CrowdSystem : SystemBase
         var afterQueriesProcessed = queriesScheduled > 0 ? JobHandle.CombineDependencies(m_AfterQueriesProcessed) : afterRequestsMovedToQueries;
 
         var afterPathsAdded = afterQueriesProcessed;
+        // 假设每个代理最多有100个路径点
+        int maxPathsPerAgent = 100;
+        var pathsArray = new NativeArray<PolygonId>(agentArray.Length * maxPathsPerAgent, Allocator.TempJob);
+        
         foreach (var queue in m_QueryQueues)
         {
             var resultsJob = new ApplyQueryResultsJob 
             { 
                 queryQueue = queue, 
                 agentNavigators = agentNavigatorArray,
-                paths = new NativeArray<PolygonId>(agentArray.Length * 100, Allocator.TempJob) // 假设每个代理最多有100个路径点
+                paths = pathsArray,
+                pathsStride = maxPathsPerAgent
             };
             afterPathsAdded = resultsJob.Schedule(afterPathsAdded);
             navMeshWorld.AddDependency(afterPathsAdded);
         }
 
-        // 假设每个代理最多有100个路径点
-        int maxPathsPerAgent = 100;
-        var pathsArray = new NativeArray<PolygonId>(agentArray.Length * maxPathsPerAgent, Allocator.TempJob);
 
         var advance = new AdvancePathJob 
         { 
@@ -404,7 +406,7 @@ public partial class CrowdSystem : SystemBase
             var queryCleanupJob = new QueryCleanupJob
             {
                 queryQueue = queue,
-                pathRequestIdForAgent = m_PathRequestIdForAgent
+                pathRequestIdForAgent = m_PathRequestIdForAgent.AsDeferredJobArray()
             };
             cleanupFence = queryCleanupJob.Schedule(cleanupFence);
             m_AfterQueriesCleanup = cleanupFence;

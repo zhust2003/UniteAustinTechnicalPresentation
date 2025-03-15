@@ -324,7 +324,7 @@ public partial class SpellSystem : SystemBase
 				transforms = transformsArray,
 				frameCount = UnityEngine.Time.frameCount,
 				rigidbodies = rigidbodiesArray,
-				spells = spellData.AsArray()
+				spells = spellData.AsDeferredJobArray()
 			};
 
 			CombinedExplosionHandle = explosionJob.Schedule(rigidbodiesQuery.CalculateEntityCount(), SimulationState.HumongousBatchSize, Dependency);

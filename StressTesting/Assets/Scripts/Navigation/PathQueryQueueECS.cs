@@ -128,7 +128,7 @@ public struct PathQueryQueueEcs
         return m_State[0].resultPathsCount;
     }
 
-    public void CopyResultsTo(ref NativeArray<PolygonId> agentPaths, ref NativeArray<CrowdAgentNavigator> agentNavigators)
+    public void CopyResultsTo(ref NativeArray<PolygonId> agentPaths, ref NativeArray<CrowdAgentNavigator> agentNavigators, int pathsStride)
     {
         var state = m_State[0];
         for (var i = 0; i < state.resultPathsCount; i++)
@@ -138,9 +138,13 @@ public struct PathQueryQueueEcs
             var resultNodes = new NativeSlice<PolygonId>(m_ResultNodes, resultPathInfo.begin, resultPathInfo.size);
             
             var pathLength = math.min(resultNodes.Length, agentPaths.Length - index);
+            if (pathLength > pathsStride)
+            {
+                Debug.LogAssertion("Path length is greater than paths stride!!!!");
+            }
             for (var j = 0; j < pathLength; j++)
             {
-                agentPaths[index + j] = resultNodes[j];
+                agentPaths[index * pathsStride + j] = resultNodes[j];
             }
 
             var navigator = agentNavigators[index];

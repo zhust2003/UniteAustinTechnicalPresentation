@@ -448,8 +448,8 @@ public partial class FormationPathFindSystem : SystemBase
 
         public void Execute(int index)
         {
-            FormationIntegrityData data = integrityData[index];
-
+            var data = integrityData[index];
+            
             var n = navigators[index];
             if (!formations[index].EnableMovement || data.unitsFar + data.unitsClose >= data.unitCount ||
                 formations[index].FormationState == FormationData.State.Spawning)
