@@ -99,6 +99,12 @@ public partial class FlightSystem : SystemBase
 		
 		flightJobFence.Complete();
 		
+		// 将修改后的数据写回到实体组件
+		flyingUnitsQuery.CopyFromComponentDataArray(transforms);
+		flyingUnitsQuery.CopyFromComponentDataArray(rigidbodies);
+		flyingUnitsQuery.CopyFromComponentDataArray(minionData);
+		flyingUnitsQuery.CopyFromComponentDataArray(animationData);
+		
 		// 清理临时分配的数组
 		entities.Dispose();
 		flyingSelector.Dispose();

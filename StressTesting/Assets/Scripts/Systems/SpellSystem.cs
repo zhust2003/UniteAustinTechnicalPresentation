@@ -250,6 +250,8 @@ public partial class SpellSystem : SystemBase
 				FireLance fireLance = go.GetComponent<FireLance>();
 				go.SetActive(true);
 				fireLance.PlayEffect(go.transform.position, lastHit.point);
+
+				SpellExplosionsQueue.Add(new SpellExplosion(SimulationSettings.Instance.SpellSettings[0], lastHit.point));
 			}
 		}
 		else if (UnityEngine.Input.GetKeyDown(KeyCode.Alpha2))
@@ -273,13 +275,13 @@ public partial class SpellSystem : SystemBase
 					float variant = Mathf.PI * spellVelocityScale * 0.05f;
 					angle = UnityEngine.Random.Range(angle - variant, angle + variant);
 
-					float velocity = ArcherUtils.GetArrowVelocity(distance, angle, arrowStartingPosition.y - targetPosition.y);
+					float velocity = ArcherJob.GetArrowVelocity(distance, angle, arrowStartingPosition.y - targetPosition.y);
 
 					float3 shootingVector = math.normalize(new float3(relativeVector.x, 0, relativeVector.z));
 
 					// rotate the vector
 					float3 rotAxis = math.cross(shootingVector, new float3(0, 1, 0));
-					Quaternion rotation = ArcherUtils.AngleAxis(angle, rotAxis);
+					Quaternion rotation = ArcherJob.AngleAxis(angle, rotAxis);
 
 					shootingVector = rotation * shootingVector;
 					var arrow = new ArrowData() {IsFriendly = 1};
@@ -369,20 +371,5 @@ public partial class SpellSystem : SystemBase
 		var go = pool.Get();
 		go.GetComponentInChildren<SpellScript>().InitPositions(position);
 		return go;
-	}
-}
-
-// 辅助类，替代ArcherJob中的方法
-public static class ArcherUtils
-{
-	public static float GetArrowVelocity(float distance, float angle, float heightDifference)
-	{
-		// 简单实现，根据实际需要修改
-		return distance * 2f;
-	}
-	
-	public static Quaternion AngleAxis(float angle, float3 axis)
-	{
-		return Quaternion.AngleAxis(angle * Mathf.Rad2Deg, axis);
 	}
 }
