@@ -63,6 +63,8 @@ public partial class MinionAttackSystem : SystemBase
 
 		// 等待作业完成
 		attackJobFence.Complete();
+
+		minionsQuery.CopyFromComponentDataArray(minionsData);
 		
 		// 清理临时分配的数组
 		entities.Dispose();
