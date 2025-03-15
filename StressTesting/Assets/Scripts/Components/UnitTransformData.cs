@@ -16,7 +16,7 @@ public struct UnitTransformData : IComponentData
 		Position = position;
 		Forward = forward;
 		UnitType = 0;
-		FormationEntity = new Entity(); // null entity
+		FormationEntity = Entity.Null; // null entity
 		Scale = 1;
 		HeightOffset = 0f;
 	}

@@ -49,7 +49,7 @@ public partial class SpawnerSystem : SystemBase
 		{
 			SpawnPoints[i] = spawnComponents[i];
 			var spawnPointData = SpawnPoints[i];
-			spawnPointData.formationEntity = new Entity(); // does new Entity() behave like a null entity
+			spawnPointData.formationEntity = Entity.Null; 
 			spawnPointData.offset = SpawnPoints[i].transform.GetChild(0).transform.position - SpawnPoints[i].transform.position;
 
 			spawnPointData.Position = spawnComponents[i].transform.position;

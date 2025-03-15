@@ -33,7 +33,7 @@ public struct AttackTargetJob : IJobParallelFor
 		}
 		if (minion.attackCycle < 0)
 		{
-			if (minionAttack.targetEntity == new Entity()) return;
+			if (minionAttack.targetEntity == Entity.Null) return;
 			minion.attackCycle = 0;
 		}
 
@@ -46,7 +46,7 @@ public struct AttackTargetJob : IJobParallelFor
 		minion.attackCycle += dt;
 		if (minion.attackCycle > MinionData.AttackTime)
 		{
-			if (minionAttack.targetEntity == new Entity()) minion.attackCycle = -1;
+			if (minionAttack.targetEntity == Entity.Null) minion.attackCycle = -1;
 			else minion.attackCycle -= MinionData.AttackTime;
 		}
 

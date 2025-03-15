@@ -125,7 +125,7 @@ public class Spawner : MonoBehaviour
 		var prototypeMinion = entityManager.Instantiate(GetMinionEntityPrefab(unitType));
 
 		entityManager.AddComponentData(prototypeMinion, new MinionBitmask(formationData.IsFriendly, spawnedFromPortals));
-		entityManager.AddComponentData(prototypeMinion, new MinionAttackData(new Entity()));
+		entityManager.AddComponentData(prototypeMinion, new MinionAttackData(Entity.Null));
 		entityManager.AddComponentData(prototypeMinion, new MinionPathData());
 		
 		// 使用DynamicBuffer替代FixedArray

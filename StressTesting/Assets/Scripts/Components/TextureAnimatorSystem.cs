@@ -73,41 +73,6 @@ public partial class TextureAnimatorSystem : SystemBase
 
 	#region Per unit type tuples
 
-	public struct Units
-	{
-		public NativeArray<TextureAnimatorData> animationData;
-		public NativeArray<UnitTransformData> transforms;
-		public int Length;
-	}
-
-	public struct MeleeUnits
-	{
-		public NativeArray<TextureAnimatorData> animationData;
-		public NativeArray<UnitTransformData> transforms;
-		public int Length;
-	}
-
-	public struct TankUnits
-	{
-		public NativeArray<TextureAnimatorData> animationData;
-		public NativeArray<UnitTransformData> transforms;
-		public int Length;
-	}
-
-	public struct RangedUnits
-	{
-		public NativeArray<TextureAnimatorData> animationData;
-		public NativeArray<UnitTransformData> transforms;
-		public int Length;
-	}
-
-	public struct SkeletonUnits
-	{
-		public NativeArray<TextureAnimatorData> animationData;
-		public NativeArray<UnitTransformData> transforms;
-		public int Length;
-	}
-
 	private EntityQuery allUnitsQuery;
 	private EntityQuery meleeUnitsQuery;
 	private EntityQuery tankUnitsQuery;
@@ -125,12 +90,6 @@ public partial class TextureAnimatorSystem : SystemBase
 	private NativeArray<TextureAnimatorData> skeletonUnitsBuffer;
 	private NativeArray<UnitTransformData> skeletonTransformsBuffer;
 
-	private Units units;
-	private MeleeUnits meleeUnits;
-	private TankUnits tankUnits;
-	private RangedUnits rangedUnits;
-	private SkeletonUnits skeletonUnits;
-
 	#endregion
 
 	private NativeArray<AnimationClipDataBaked> animationClipData;
@@ -146,6 +105,7 @@ public partial class TextureAnimatorSystem : SystemBase
 	struct PrepareAnimatorDataJob : IJobParallelFor
 	{
 		public NativeArray<TextureAnimatorData> textureAnimatorData;
+		public NativeArray<Entity> entities;
 
 		[NativeFixedLength(100)]
 		[ReadOnly]
@@ -477,28 +437,45 @@ public partial class TextureAnimatorSystem : SystemBase
 			// 更新缓冲区
 			UpdateBuffers();
 
+			// 获取实体以便更新组件数据
+			NativeArray<Entity> allUnitsEntities = allUnitsQuery.ToEntityArray(Allocator.TempJob);
+
 			var prepareAnimatorJob = new PrepareAnimatorDataJob()
 			{
 				animationClips = animationClipData,
 				dt = dt,
-				textureAnimatorData = allUnitsBuffer
+				textureAnimatorData = allUnitsBuffer,
+				entities = allUnitsEntities
 			};
 
 			var prepareAnimatorFence = prepareAnimatorJob.Schedule(allUnitsBuffer.Length, SimulationState.BigBatchSize, Dependency);
+			prepareAnimatorFence.Complete();
+            
+			// 将更新后的数据写回EntityManager
+			var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
+			for (int i = 0; i < allUnitsBuffer.Length; i++)
+			{
+				entityManager.SetComponentData(allUnitsEntities[i], allUnitsBuffer[i]);
+			}
+            
+			allUnitsEntities.Dispose();
 
+			// 重新获取更新后的数据
+			UpdateBuffers();
+            
 			NativeArray<JobHandle> jobHandles = new NativeArray<JobHandle>(4, Allocator.Temp);
-			jobHandles[0] = prepareAnimatorFence;
+			jobHandles[0] = Dependency;
 
 			foreach (var data in perUnitTypeDataHolder)
 			{
 				switch (data.Key)
 				{
 					case UnitType.Melee:
-						ComputeFences(meleeUnitsBuffer, dt, meleeTransformsBuffer, data, prepareAnimatorFence, jobHandles, 0);
+						ComputeFences(meleeUnitsBuffer, dt, meleeTransformsBuffer, data, Dependency, jobHandles, 0);
 						data.Value.Count = meleeUnitsBuffer.Length;
 						break;
 					case UnitType.Skeleton:
-						ComputeFences(skeletonUnitsBuffer, dt, skeletonTransformsBuffer, data, prepareAnimatorFence, jobHandles, 3);
+						ComputeFences(skeletonUnitsBuffer, dt, skeletonTransformsBuffer, data, Dependency, jobHandles, 3);
 						data.Value.Count = skeletonUnitsBuffer.Length;
 						break;
 				}

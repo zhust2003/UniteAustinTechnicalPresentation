@@ -86,7 +86,7 @@ public struct MinionCollisionJob : IJobParallelFor
 		var currentTransform = transforms[index];
 		var currentMinion = minionVelocities[index];
 		var attackData = minionAttackData[index];
-		attackData.targetEntity = new Entity();
+		attackData.targetEntity = Entity.Null;
 
 		var velocity = currentMinion.Velocity.xz;
 		

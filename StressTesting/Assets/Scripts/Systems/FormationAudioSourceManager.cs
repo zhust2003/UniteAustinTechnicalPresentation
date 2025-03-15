@@ -83,7 +83,7 @@ public partial class FormationAudioSourceManager : SystemBase
 			for (var i = 0; i < AudioSourcePoolSize; i++)
 			{
 				var go = UnityEngine.Object.Instantiate(SimulationSettings.Instance.FormationAudioSource);
-				audioSources.Add(new AudioSourceFormation() {AudioSource = go.GetComponent<AudioSource>(), FormationEntity = new Entity()});
+				audioSources.Add(new AudioSourceFormation() {AudioSource = go.GetComponent<AudioSource>(), FormationEntity = Entity.Null});
 			}
 			maxDist = audioSources[0].AudioSource.maxDistance;
 			maxDist *= maxDist;
