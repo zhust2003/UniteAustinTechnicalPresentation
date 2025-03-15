@@ -458,7 +458,7 @@ public partial class FormationPathFindSystem : SystemBase
             }
             else
             {
-                n.speed = math.lerp(1f, 2.1f, 1 - (data.unitsClose / (float)data.unitCount));
+                n.speed = math.lerp(2.3f, 8f, 1 - (data.unitsClose / (float)data.unitCount));
             }
 
             navigators[index] = n;

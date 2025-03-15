@@ -20,8 +20,6 @@ public struct MinionBehaviourJob : IJobParallelForBatch
 	[ReadOnly]
 	public float archerAttackTime;
 
-	public NativeArray<TextureAnimatorData> animatorData;
-
 	[ReadOnly]
 	public NativeArray<UnitTransformData> transforms;
 
@@ -31,6 +29,8 @@ public struct MinionBehaviourJob : IJobParallelForBatch
 	public NativeArray<Vector3> forwardsBuffer;
 	public NativeArray<Vector3> positionsBuffer;
 	public NativeArray<NavMeshLocation> locationsBuffer;
+
+	public NativeArray<TextureAnimatorData> animatorData;
 
 	[ReadOnly]
 	public float dt;

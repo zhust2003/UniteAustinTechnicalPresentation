@@ -3,7 +3,9 @@ using Unity.Jobs;
 using UnityEngine;
 using Unity.Entities;
 using UnityEngine.Experimental.AI;
+using Unity.Burst;
 
+[BurstCompile]
 public struct MinionBehaviourMoveJob : IJobParallelForBatch
 {
 	public NativeArray<Vector3> positionsBuffer;

@@ -132,7 +132,7 @@ public partial class PrepareMinionTargetsSystem : SystemBase
             }
 
             minionTarget.Target = target;
-            minionTarget.speed = formation.SpawnedCount == formation.UnitCount ? baseMinionSpeed : baseMinionSpeed * 1.75f;
+            minionTarget.speed = formation.SpawnedCount < formation.UnitCount ? baseMinionSpeed * 1.75f : baseMinionSpeed;
 
             var distance = math.length(target - transforms[index].Position);
                 
