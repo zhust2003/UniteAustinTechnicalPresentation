@@ -70,6 +70,10 @@ public partial class ArcherMinionSystem : SystemBase
 		};
 
 		archerJobFence = archerJob.Schedule(minions.Length, SimulationState.SmallBatchSize);
+
+		archerJobFence.Complete();
+		// 将修改后的箭矢数据写回到实体组件
+		rangedMinionsQuery.CopyFromComponentDataArray(minions);
 		
 		// 确保在下一帧开始前完成作业
 		Dependency = archerJobFence;

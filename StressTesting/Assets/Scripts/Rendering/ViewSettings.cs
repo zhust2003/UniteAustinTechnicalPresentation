@@ -6,6 +6,7 @@ public class ViewSettings : ScriptableObject
 {
 	public GameObject MeleePrefab;
 	public GameObject SkeletonPrefab;
+	public GameObject RangedPrefab;
 
 	private static ViewSettings instance;
 

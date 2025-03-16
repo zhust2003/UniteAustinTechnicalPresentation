@@ -211,6 +211,9 @@ public class Spawner : MonoBehaviour
 			case UnitType.Skeleton:
 				minionPrefab = ViewSettings.Instance.SkeletonPrefab;
 				break;
+			case UnitType.Ranged:
+				minionPrefab = ViewSettings.Instance.RangedPrefab;
+				break;
 			default:
 				throw new ArgumentOutOfRangeException("unitType", unitType, null);
 		}

@@ -15,7 +15,8 @@ using UnityEngine.Rendering;
 public enum UnitType
 {
 	Melee = 0,
-	Skeleton = 1
+	Skeleton = 1,
+	Ranged = 2
 }
 
 public struct AnimationName
@@ -478,6 +479,10 @@ public partial class TextureAnimatorSystem : SystemBase
 						ComputeFences(skeletonUnitsBuffer, dt, skeletonTransformsBuffer, data, Dependency, jobHandles, 3);
 						data.Value.Count = skeletonUnitsBuffer.Length;
 						break;
+					case UnitType.Ranged:
+						ComputeFences(rangedUnitsBuffer, dt, rangedTransformsBuffer, data, Dependency, jobHandles, 1);
+						data.Value.Count = rangedUnitsBuffer.Length;
+						break;
 				}
 			}
 
@@ -508,6 +513,12 @@ public partial class TextureAnimatorSystem : SystemBase
 		if (skeletonTransformsBuffer.IsCreated) skeletonTransformsBuffer.Dispose();
 		skeletonUnitsBuffer = skeletonUnitsQuery.ToComponentDataArray<TextureAnimatorData>(Allocator.TempJob);
 		skeletonTransformsBuffer = skeletonUnitsQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
+
+		// 更新远程单位的缓冲区
+		if (rangedUnitsBuffer.IsCreated) rangedUnitsBuffer.Dispose();
+		if (rangedTransformsBuffer.IsCreated) rangedTransformsBuffer.Dispose();
+		rangedUnitsBuffer = rangedUnitsQuery.ToComponentDataArray<TextureAnimatorData>(Allocator.TempJob);
+		rangedTransformsBuffer = rangedUnitsQuery.ToComponentDataArray<UnitTransformData>(Allocator.TempJob);
 	}
 
 	private void ComputeFences(NativeArray<TextureAnimatorData> textureAnimatorDataForUnitType, float dt, NativeArray<UnitTransformData> unitTransformDataForUnitType, KeyValuePair<UnitType, DataPerUnitType> data, JobHandle previousFence, NativeArray<JobHandle> jobHandles, int i)
@@ -614,6 +625,7 @@ public partial class TextureAnimatorSystem : SystemBase
 		perUnitTypeDataHolder = new Dictionary<UnitType, DataPerUnitType>();
 		InstantiatePerUnitTypeData(UnitType.Melee);
 		InstantiatePerUnitTypeData(UnitType.Skeleton);
+		InstantiatePerUnitTypeData(UnitType.Ranged);
 
 		initialized = true;
 	}
